@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import random
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .departure_intelligence import validate_shift_config
-from .models import MLBehavioralModel, MLSPBUClusterAssignment, MasterDepot, MasterMT, MasterSPBU
+from .models import FactLoadingOrderLine, MLBehavioralModel, MLSPBUClusterAssignment, MasterDepot, MasterMT, MasterProduct, MasterSPBU
 from .normalization import mt_capacity_kl
 from .phase6_export import workbook_bytes
 
@@ -84,6 +84,7 @@ def generate_demo_loading_orders(
     depot_id: str,
     model: MLBehavioralModel,
     total_order_kl: float,
+    loading_order_date: date,
     random_seed: int | None = None,
 ) -> tuple[bytes, str]:
     total = _positive_demo_total(
@@ -128,6 +129,34 @@ def generate_demo_loading_orders(
             },
         )
 
+    active_products = db.scalars(
+        select(MasterProduct)
+        .where(MasterProduct.active_status == "ACTIVE")
+        .order_by(MasterProduct.product_name)
+    ).all()
+    if not active_products:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "DEMO_PRODUCT_NOT_FOUND",
+                "message": "No active canonical product is available for Loading Order demo generation.",
+            },
+        )
+    product_by_id = {product.product_id: product for product in active_products}
+    spbu_ids = [spbu.spbu_id for spbu, _assignment in historical_rows]
+    observed_product_pairs = db.execute(
+        select(FactLoadingOrderLine.spbu_id, FactLoadingOrderLine.product_id)
+        .where(
+            FactLoadingOrderLine.spbu_id.in_(spbu_ids),
+            FactLoadingOrderLine.product_id.in_(list(product_by_id)),
+        )
+        .distinct()
+    ).all()
+    products_by_spbu: dict[str, list[MasterProduct]] = {}
+    for spbu_id, product_id in observed_product_pairs:
+        if spbu_id and product_id in product_by_id:
+            products_by_spbu.setdefault(spbu_id, []).append(product_by_id[product_id])
+
     try:
         shifts = validate_shift_config(model.shift_definition_snapshot or [])
     except HTTPException as exc:
@@ -142,7 +171,12 @@ def generate_demo_loading_orders(
     rng = random.Random(seed)
     order_count = int(total / DEMO_LOADING_ORDER_UNIT_KL)
     token = f"{seed % 1_000_000:06d}"
-    planning_day = datetime.now(depot_timezone).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    planning_day = datetime(
+        loading_order_date.year,
+        loading_order_date.month,
+        loading_order_date.day,
+        tzinfo=depot_timezone,
+    )
     shift_by_name = {shift["name"]: shift for shift in shifts}
     demo_pool = [
         (spbu, assignment)
@@ -178,12 +212,14 @@ def generate_demo_loading_orders(
         base_minute = rng.randint(segment["start_minute"], latest_minute)
         for offset, (spbu, _assignment) in enumerate(selected):
             start_datetime = planning_day + timedelta(minutes=base_minute + offset)
+            product = rng.choice(products_by_spbu.get(spbu.spbu_id) or active_products)
             rows.append(
                 [
                     f"DEMO-LO-{token}-{generated + offset + 1:04d}",
                     start_datetime.strftime("%Y-%m-%d %H:%M:%S"),
                     spbu.spbu_code,
                     spbu.spbu_name or spbu.spbu_code,
+                    product.product_name,
                     float(DEMO_LOADING_ORDER_UNIT_KL),
                 ]
             )
@@ -193,7 +229,7 @@ def generate_demo_loading_orders(
         [
             (
                 "Loading Order",
-                ["loading_order_no", "shipment_start_datetime", "spbu_no", "spbu_name", "order_quantity_kl"],
+                ["loading_order_no", "shipment_start_datetime", "spbu_no", "spbu_name", "product", "order_quantity_kl"],
                 rows,
             )
         ]

@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from io import BytesIO
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .database import get_db
+from .models import MasterMT
 from .phase6_auth import Phase6Actor, require_phase6_permission
+from .phase6_capacity import mt_compartment_profile
 from .phase6_demo import generate_demo_loading_orders, generate_demo_mt_availability
-from .phase6_export import loading_order_template, mt_availability_template, prediction_export, validation_report
+from .phase6_export import loading_order_template, loading_order_workbook, mt_availability_template, mt_availability_workbook, prediction_export, validation_report
 from .phase6_service import (
     adjust_shipment,
     duplicate_prediction_run,
@@ -54,6 +58,7 @@ class DemoLoadingOrderRequest(BaseModel):
     depot_id: str
     model_id: str
     total_order_kl: float = Field(gt=0, le=40000)
+    loading_order_date: date
 
 
 class DemoMTAvailabilityRequest(BaseModel):
@@ -61,6 +66,27 @@ class DemoMTAvailabilityRequest(BaseModel):
     model_id: str
     total_capacity_kl: float = Field(gt=0, le=40000)
     random_availability: bool = False
+
+
+class ManagedLoadingOrderRow(BaseModel):
+    loading_order_no: str | None = Field(default=None, max_length=200)
+    shipment_start_datetime: str | None = Field(default=None, max_length=100)
+    spbu_no: str | None = Field(default=None, max_length=200)
+    product: str | None = Field(default=None, max_length=255)
+    order_quantity_kl: str | float | int | None = None
+
+
+class ManagedLoadingOrderWorkbookRequest(BaseModel):
+    rows: list[ManagedLoadingOrderRow] = Field(default_factory=list, max_length=10000)
+
+
+class ManagedMTAvailabilityRow(BaseModel):
+    vehicle_registration_no: str | None = Field(default=None, max_length=200)
+    initial_available_datetime: str | None = Field(default=None, max_length=100)
+
+
+class ManagedMTAvailabilityWorkbookRequest(BaseModel):
+    rows: list[ManagedMTAvailabilityRow] = Field(default_factory=list, max_length=10000)
 
 
 def _excel_response(content: bytes, filename: str) -> StreamingResponse:
@@ -80,11 +106,63 @@ def prediction_models(
     return list_prediction_models(db, depot_id)
 
 
+@router.get("/master-mt-availability")
+def master_mt_availability(
+    depot_id: str,
+    db: Session = Depends(get_db),
+    _actor: Phase6Actor = Depends(require_phase6_permission("view")),
+) -> list[dict]:
+    rows = db.scalars(
+        select(MasterMT)
+        .where(MasterMT.depot_id == depot_id, MasterMT.active_status == "ACTIVE")
+        .order_by(MasterMT.vehicle_registration)
+    ).all()
+    result = []
+    for row in rows:
+        profile = mt_compartment_profile(row)
+        result.append(
+            {
+                "mt_id": row.mt_id,
+                "vehicle_registration": row.vehicle_registration,
+                "capacity_label": row.capacity_label,
+                "vehicle_type_tag": row.vehicle_type_tag,
+                "number_of_compartments": row.number_of_compartments,
+                "depot_id": row.depot_id,
+                "active_status": row.active_status,
+                "phase6_eligible": profile["valid"],
+                "phase6_failed_rules": profile["failed_rules"],
+            }
+        )
+    return result
+
+
 @router.get("/templates/loading-order")
 def download_loading_order_template(
     _actor: Phase6Actor = Depends(require_phase6_permission("view")),
 ) -> StreamingResponse:
     return _excel_response(loading_order_template(), "phase6-loading-order-template.xlsx")
+
+
+@router.post("/loading-orders/workbook")
+def create_managed_loading_order_workbook(
+    request: ManagedLoadingOrderWorkbookRequest,
+    _actor: Phase6Actor = Depends(require_phase6_permission("run")),
+) -> StreamingResponse:
+    return _excel_response(
+        loading_order_workbook([row.model_dump() for row in request.rows]),
+        "phase6-managed-loading-orders.xlsx",
+    )
+
+
+@router.post("/mt-availability/workbook")
+def create_managed_mt_availability_workbook(
+    request: ManagedMTAvailabilityWorkbookRequest,
+    _actor: Phase6Actor = Depends(require_phase6_permission("run")),
+) -> StreamingResponse:
+    return _excel_response(
+        mt_availability_workbook([row.model_dump() for row in request.rows]),
+        "phase6-managed-mt-availability.xlsx",
+    )
 
 
 @router.post("/demo/loading-order")
@@ -99,6 +177,7 @@ def create_demo_loading_order_file(
         depot_id=request.depot_id,
         model=model,
         total_order_kl=request.total_order_kl,
+        loading_order_date=request.loading_order_date,
     )
     return _excel_response(content, filename)
 

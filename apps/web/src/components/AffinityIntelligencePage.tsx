@@ -1,7 +1,7 @@
 import ReactECharts from "echarts-for-react";
-import { ArrowDown, ArrowUp, ArrowUpDown, Network, RefreshCw } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Hand, Maximize2, Network, RefreshCw, Save, Trash2, X, ZoomIn } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { apiGet } from "../lib/api";
+import { apiGet, apiSend } from "../lib/api";
 
 type Depot = { depot_id: string; depot_name: string };
 type Product = { product_id: string; product_name: string };
@@ -23,8 +23,10 @@ type Filters = {
 type Pair = {
   spbu_id: string;
   spbu_code: string;
+  spbu_tags: string[];
   mt_id: string;
   mt_label: string;
+  mt_tags: string[];
   shipment_count: number;
   total_spbu_shipment_count: number;
   total_mt_shipment_count: number;
@@ -40,6 +42,7 @@ type Profile = {
   spbu_id: string;
   spbu_code: string;
   spbu_name: string | null;
+  spbu_tags: string[];
   shipment_count: number;
   operating_day_count: number;
   unique_mt_count: number;
@@ -112,14 +115,14 @@ type Analysis = {
   profiles: Profile[];
   rankings: { most_consistent: Array<Profile & { rank: number }>; most_variable: Array<Profile & { rank: number }>; least_stable: Array<Profile & { rank: number }> };
   scatter: Array<Profile & { value: [number, number, number] }>;
-  pattern_matrix: { unique_mt_split: number; affinity_split: number; points: Array<{ spbu_id: string; spbu_code: string; value: [number, number]; quadrant: string; shipment_count: number }> };
+  pattern_matrix: { unique_mt_split: number; affinity_split: number; points: Array<{ spbu_id: string; spbu_code: string; spbu_tags: string[]; value: [number, number]; quadrant: string; shipment_count: number }> };
   selected_spbu_profile: Profile | null;
   affinity_distribution: Pair[];
   temporal_profile: TemporalRow[];
   recent_comparison: { recent_start_date: string | null; full_period: DistributionRow[]; recent_period: DistributionRow[] };
   reverse_detail: ReverseDetail | null;
   network: {
-    nodes: Array<{ id: string; entity_id: string; entity_type: "SPBU" | "MT"; name: string; category: number; symbolSize: number; selected: boolean }>;
+    nodes: Array<{ id: string; entity_id: string; entity_type: "SPBU" | "MT"; name: string; tags: string[]; category: number; symbolSize: number; selected: boolean }>;
     edges: Array<Pair & { source: string; target: string; value: number; highlighted: boolean }>;
     categories: Array<{ name: string }>;
     edge_metric: string;
@@ -127,6 +130,32 @@ type Analysis = {
   evidence: { relationship: { spbu_id: string; mt_id: string } | null; distinct_shipment_count: number; rows: EvidenceRow[] };
   methodology: Record<string, string | Record<string, unknown>>;
 };
+type SavedAffinityAnalysisConfig = {
+  id: string;
+  name: string;
+  depot_id: string;
+  depot_name: string | null;
+  start_date: string;
+  end_date: string;
+  product_id: string | null;
+  product_name: string;
+  minimum_observations: number;
+  confidence: string;
+  temporal_bucket: string;
+  recent_days: number;
+  top_n: number;
+  edge_metric: string;
+  selected_spbu_id: string | null;
+  selected_mt_id: string | null;
+  spbu_analyzed: number;
+  mt_observed: number;
+  created_by: string;
+  created_at: string | null;
+  updated_at: string | null;
+  ui_state?: Record<string, unknown>;
+  affinity_analysis_snapshot?: Analysis;
+};
+type SavedAffinityAnalysisConfigResponse = { total: number; limit: number; offset: number; rows: SavedAffinityAnalysisConfig[] };
 
 function addDays(value: string, days: number): string {
   const date = new Date(`${value}T00:00:00`);
@@ -147,6 +176,15 @@ function dateLabel(value: string | null): string {
   return new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(`${value.slice(0, 10)}T00:00:00`));
 }
 
+function dateTimeLabel(value: string | null): string {
+  if (!value) return "-";
+  return new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+}
+
+function formatTags(tags: string[] | null | undefined): string {
+  return tags?.length ? tags.join(", ") : "-";
+}
+
 function confidenceClass(level: string): string {
   if (level === "HIGH") return "border-mint bg-mint/10 text-mint";
   if (level === "MEDIUM") return "border-amber bg-amber/10 text-amber";
@@ -164,6 +202,20 @@ function MetricTrack({ label, value, color = "#0b73bf" }: { label: string; value
     <div>
       <div className="mb-1 flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-500"><span>{label}</span><span>{number(value, 1)} / 100</span></div>
       <div className="h-3 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full" style={{ width: `${Math.max(0, Math.min(100, value))}%`, backgroundColor: color }} /></div>
+    </div>
+  );
+}
+
+type ChartInteractionMode = "zoom" | "pan";
+type ChartViewport = { start: number; end: number };
+
+function ChartInteractionToolbar({ mode, onModeChange, onZoom, onFit }: { mode: ChartInteractionMode; onModeChange: (mode: ChartInteractionMode) => void; onZoom: () => void; onFit: () => void }) {
+  const buttonClass = (active: boolean) => `inline-flex h-8 w-8 items-center justify-center rounded-lg border transition ${active ? "border-petroblue bg-petroblue text-white" : "border-line bg-white text-slate-500 hover:border-petroblue hover:text-petroblue"}`;
+  return (
+    <div className="flex items-center gap-1" aria-label="Chart navigation controls">
+      <button type="button" className={buttonClass(mode === "zoom")} aria-label="Zoom titik SPBU" aria-pressed={mode === "zoom"} title="Zoom: klik untuk memperbesar titik SPBU dan skala X/Y" onClick={() => { onModeChange("zoom"); onZoom(); }}><ZoomIn size={16} /></button>
+      <button type="button" className={buttonClass(mode === "pan")} aria-label="Drag grafik" aria-pressed={mode === "pan"} title="Pan: drag grafik untuk menggeser area zoom" onClick={() => onModeChange("pan")}><Hand size={16} /></button>
+      <button type="button" className={buttonClass(false)} aria-label="Fit grafik" title="Fit: kembali ke skala X/Y awal" onClick={onFit}><Maximize2 size={16} /></button>
     </div>
   );
 }
@@ -249,7 +301,24 @@ export function AffinityIntelligencePage({ depots, products }: { depots: Depot[]
   const [dateLoading, setDateLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedScatterPoint, setSelectedScatterPoint] = useState<Analysis["scatter"][number] | null>(null);
+  const [scatterInteractionMode, setScatterInteractionMode] = useState<ChartInteractionMode>("pan");
+  const [matrixInteractionMode, setMatrixInteractionMode] = useState<ChartInteractionMode>("pan");
+  const [scatterViewport, setScatterViewport] = useState<ChartViewport>({ start: 0, end: 100 });
+  const [matrixViewport, setMatrixViewport] = useState<ChartViewport>({ start: 0, end: 100 });
+  const [savedConfigs, setSavedConfigs] = useState<SavedAffinityAnalysisConfig[]>([]);
+  const [savedConfigTotal, setSavedConfigTotal] = useState(0);
+  const [savedConfigOffset, setSavedConfigOffset] = useState(0);
+  const [savedConfigLimit, setSavedConfigLimit] = useState(5);
+  const [savedConfigLoading, setSavedConfigLoading] = useState(false);
+  const [saveModalOpen, setSaveModalOpen] = useState(false);
+  const [saveName, setSaveName] = useState("");
+  const [loadModalOpen, setLoadModalOpen] = useState(false);
+  const [selectedSavedConfigId, setSelectedSavedConfigId] = useState("");
+  const [configMessage, setConfigMessage] = useState("");
+  const scatterChartRef = useRef<ReactECharts>(null);
+  const matrixChartRef = useRef<ReactECharts>(null);
   const requestRef = useRef(0);
+  const preserveLoadedDatesRef = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -267,12 +336,20 @@ export function AffinityIntelligencePage({ depots, products }: { depots: Depot[]
       .then((payload) => {
         if (!active) return;
         setAvailability(payload);
-        setFilters((current) => ({ ...current, endDate: payload.max_date ?? "", startDate: payload.max_date ? (payload.min_date && addDays(payload.max_date, -29) < payload.min_date ? payload.min_date : addDays(payload.max_date, -29)) : "" }));
+        if (preserveLoadedDatesRef.current) {
+          preserveLoadedDatesRef.current = false;
+        } else {
+          setFilters((current) => ({ ...current, endDate: payload.max_date ?? "", startDate: payload.max_date ? (payload.min_date && addDays(payload.max_date, -29) < payload.min_date ? payload.min_date : addDays(payload.max_date, -29)) : "" }));
+        }
       })
       .catch((reason: unknown) => active && setError(reason instanceof Error ? reason.message : "Failed to load dates"))
       .finally(() => active && setDateLoading(false));
     return () => { active = false; };
   }, [filters.depotId]);
+
+  useEffect(() => {
+    void fetchSavedConfigs(savedConfigOffset, savedConfigLimit, filters.depotId);
+  }, [filters.depotId, savedConfigOffset, savedConfigLimit]);
 
   async function load(activeFilters: Filters, selectedSpbuId?: string | null, selectedMtId?: string | null) {
     if (!activeFilters.depotId || !activeFilters.startDate || !activeFilters.endDate) { setError("Select Depot and Date Range before running Phase 4."); return; }
@@ -304,6 +381,151 @@ export function AffinityIntelligencePage({ depots, products }: { depots: Depot[]
     }
   }
 
+  async function fetchSavedConfigs(nextOffset = savedConfigOffset, nextLimit = savedConfigLimit, depotId = filters.depotId) {
+    setSavedConfigLoading(true);
+    try {
+      const params = new URLSearchParams({ limit: String(nextLimit), offset: String(nextOffset) });
+      if (depotId) params.set("depot_id", depotId);
+      const payload = await apiGet<SavedAffinityAnalysisConfigResponse>(`/api/v1/affinity-intelligence/saved-configurations?${params.toString()}`);
+      setSavedConfigs(payload.rows);
+      setSavedConfigTotal(payload.total);
+      setSavedConfigOffset(payload.offset);
+      setSavedConfigLimit(payload.limit);
+      setSelectedSavedConfigId((current) => payload.rows.some((row) => row.id === current) ? current : payload.rows[0]?.id ?? "");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Failed to load saved affinity configurations");
+    } finally {
+      setSavedConfigLoading(false);
+    }
+  }
+
+  function openSaveModal() {
+    if (!analysis || !appliedFilters) {
+      setError("Run Phase 4 analysis before saving an affinity analysis configuration.");
+      setConfigMessage("");
+      return;
+    }
+    setSaveName("");
+    setSaveModalOpen(true);
+    setError(null);
+  }
+
+  function openLoadModal() {
+    if (!savedConfigs.length) {
+      setError("No saved affinity analysis configuration is available.");
+      setConfigMessage("");
+      return;
+    }
+    setSelectedSavedConfigId((current) => current || savedConfigs[0]?.id || "");
+    setLoadModalOpen(true);
+    setError(null);
+  }
+
+  async function saveConfig() {
+    if (!analysis || !appliedFilters) return;
+    const name = saveName.trim();
+    if (!name) { setError("Configuration name is required."); return; }
+    setSavedConfigLoading(true);
+    setError(null);
+    try {
+      const saved = await apiSend<SavedAffinityAnalysisConfig>("/api/v1/affinity-intelligence/saved-configurations", "POST", {
+        name,
+        depot_id: appliedFilters.depotId,
+        start_date: appliedFilters.startDate,
+        end_date: appliedFilters.endDate,
+        product_id: appliedFilters.productId || null,
+        minimum_observations: Number(appliedFilters.minimumObservations),
+        confidence: appliedFilters.confidence,
+        temporal_bucket: appliedFilters.temporalBucket,
+        recent_days: Number(appliedFilters.recentDays),
+        top_n: Number(appliedFilters.topN),
+        edge_metric: appliedFilters.edgeMetric,
+        selected_spbu_id: analysis.selected_spbu_profile?.spbu_id ?? (appliedFilters.spbuId || null),
+        selected_mt_id: analysis.reverse_detail?.mt_id ?? null,
+        ui_state: {
+          spbu_search: spbuSearch,
+          scatter_interaction_mode: scatterInteractionMode,
+          matrix_interaction_mode: matrixInteractionMode,
+          scatter_viewport: scatterViewport,
+          matrix_viewport: matrixViewport,
+        },
+        affinity_analysis_snapshot: analysis,
+      });
+      setConfigMessage(`Saved affinity analysis configuration: ${saved.name}.`);
+      setSaveModalOpen(false);
+      setSaveName("");
+      setSavedConfigOffset(0);
+      await fetchSavedConfigs(0, savedConfigLimit, appliedFilters.depotId);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Failed to save affinity analysis configuration");
+    } finally {
+      setSavedConfigLoading(false);
+    }
+  }
+
+  async function loadConfig() {
+    if (!selectedSavedConfigId) { setError("Select a saved affinity analysis configuration to load."); return; }
+    setSavedConfigLoading(true);
+    setError(null);
+    try {
+      const saved = await apiGet<SavedAffinityAnalysisConfig>(`/api/v1/affinity-intelligence/saved-configurations/${encodeURIComponent(selectedSavedConfigId)}`);
+      const snapshot = saved.affinity_analysis_snapshot;
+      if (!snapshot) throw new Error("Saved configuration does not contain an affinity analysis snapshot.");
+      const uiState = saved.ui_state ?? {};
+      const selectedProfile = snapshot.selected_spbu_profile;
+      const nextFilters: Filters = {
+        depotId: saved.depot_id,
+        spbuId: saved.selected_spbu_id ?? selectedProfile?.spbu_id ?? "",
+        startDate: saved.start_date,
+        endDate: saved.end_date,
+        productId: saved.product_id ?? "",
+        minimumObservations: String(saved.minimum_observations),
+        confidence: saved.confidence,
+        temporalBucket: saved.temporal_bucket,
+        recentDays: String(saved.recent_days),
+        topN: String(saved.top_n),
+        edgeMetric: saved.edge_metric,
+      };
+      if (filters.depotId !== saved.depot_id) preserveLoadedDatesRef.current = true;
+      setSavedConfigOffset(0);
+      setFilters(nextFilters);
+      setAppliedFilters(nextFilters);
+      setSpbuSearch(String(uiState.spbu_search ?? (selectedProfile ? spbuLabel(selectedProfile) : "")));
+      setScatterInteractionMode(uiState.scatter_interaction_mode === "zoom" ? "zoom" : "pan");
+      setMatrixInteractionMode(uiState.matrix_interaction_mode === "zoom" ? "zoom" : "pan");
+      const savedScatterViewport = uiState.scatter_viewport as ChartViewport | undefined;
+      const savedMatrixViewport = uiState.matrix_viewport as ChartViewport | undefined;
+      setScatterViewport(savedScatterViewport?.start != null && savedScatterViewport?.end != null ? savedScatterViewport : { start: 0, end: 100 });
+      setMatrixViewport(savedMatrixViewport?.start != null && savedMatrixViewport?.end != null ? savedMatrixViewport : { start: 0, end: 100 });
+      setSelectedScatterPoint(null);
+      setAnalysis(snapshot);
+      setConfigMessage(`Loaded affinity analysis configuration: ${saved.name}.`);
+      setLoadModalOpen(false);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Failed to load affinity analysis configuration");
+    } finally {
+      setSavedConfigLoading(false);
+    }
+  }
+
+  async function deleteSavedConfig(config: SavedAffinityAnalysisConfig) {
+    if (!window.confirm(`Delete saved affinity analysis configuration "${config.name}"?`)) return;
+    setSavedConfigLoading(true);
+    setError(null);
+    try {
+      await apiSend<{ status: string }>(`/api/v1/affinity-intelligence/saved-configurations/${encodeURIComponent(config.id)}`, "DELETE");
+      setConfigMessage(`Deleted affinity analysis configuration: ${config.name}.`);
+      setSelectedSavedConfigId((current) => current === config.id ? "" : current);
+      const nextOffset = savedConfigs.length === 1 ? Math.max(0, savedConfigOffset - savedConfigLimit) : savedConfigOffset;
+      setSavedConfigOffset(nextOffset);
+      await fetchSavedConfigs(nextOffset, savedConfigLimit, filters.depotId);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Failed to delete affinity analysis configuration");
+    } finally {
+      setSavedConfigLoading(false);
+    }
+  }
+
   const searchableSpbus = useMemo(() => {
     if (analysis?.profiles.length) return analysis.profiles;
     const depotRows = filters.depotId ? spbus.filter((row) => row.primary_depot_id === filters.depotId) : spbus;
@@ -324,6 +546,8 @@ export function AffinityIntelligencePage({ depots, products }: { depots: Depot[]
     if (spbuSearch.trim() && !matchedSpbu && !filters.spbuId) { setError("Select an SPBU from the search suggestions before applying the filter."); return; }
     const activeFilters = { ...filters, spbuId: matchedSpbu?.spbu_id ?? filters.spbuId };
     setSelectedScatterPoint(null);
+    setScatterViewport({ start: 0, end: 100 });
+    setMatrixViewport({ start: 0, end: 100 });
     setFilters(activeFilters);
     setAppliedFilters(activeFilters);
     await load(activeFilters, activeFilters.spbuId || null);
@@ -340,9 +564,29 @@ export function AffinityIntelligencePage({ depots, products }: { depots: Depot[]
   }
   async function selectMt(mtId: string) { if (appliedFilters) await load(appliedFilters, analysis?.selected_spbu_profile?.spbu_id, mtId); }
 
+  function fitChart(ref: { current: ReactECharts | null }, updateMode: (mode: ChartInteractionMode) => void, updateViewport: (viewport: ChartViewport) => void) {
+    const chart = ref.current?.getEchartsInstance();
+    updateViewport({ start: 0, end: 100 });
+    chart?.dispatchAction({ type: "dataZoom", dataZoomIndex: 0, start: 0, end: 100 });
+    chart?.dispatchAction({ type: "dataZoom", dataZoomIndex: 1, start: 0, end: 100 });
+    updateMode("pan");
+  }
+
+  function zoomInChart(ref: { current: ReactECharts | null }, viewport: ChartViewport, updateViewport: (viewport: ChartViewport) => void) {
+    const chart = ref.current?.getEchartsInstance();
+    if (!chart) return;
+    const center = (viewport.start + viewport.end) / 2;
+    const halfSpan = Math.max(2.5, ((viewport.end - viewport.start) * 0.7) / 2);
+    const start = Math.max(0, center - halfSpan);
+    const end = Math.min(100, center + halfSpan);
+    updateViewport({ start, end });
+    chart.dispatchAction({ type: "dataZoom", dataZoomIndex: 0, start, end });
+    chart.dispatchAction({ type: "dataZoom", dataZoomIndex: 1, start, end });
+  }
+
   const affinityOption = useMemo(() => analysis ? ({
     grid: { left: 105, right: 55, top: 18, bottom: 30 },
-    tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, formatter: (params: Array<{ dataIndex: number }>) => { const row = analysis.affinity_distribution[params[0]?.dataIndex ?? 0]; return row ? `<b>${row.mt_label}</b><br/>Shipments: ${number(row.shipment_count)}<br/>P(MT | SPBU): ${percent(row.probability_mt_given_spbu)}<br/>First: ${dateLabel(row.first_observed)}<br/>Last: ${dateLabel(row.last_observed)}` : ""; } },
+    tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, formatter: (params: Array<{ dataIndex: number }>) => { const row = analysis.affinity_distribution[params[0]?.dataIndex ?? 0]; return row ? `<b>${row.mt_label}</b><br/>MT Tag: ${formatTags(row.mt_tags)}<br/>Shipments: ${number(row.shipment_count)}<br/>P(MT | SPBU): ${percent(row.probability_mt_given_spbu)}<br/>First: ${dateLabel(row.first_observed)}<br/>Last: ${dateLabel(row.last_observed)}` : ""; } },
     xAxis: { type: "value", min: 0, max: 100, axisLabel: { formatter: "{value}%" } },
     yAxis: { type: "category", inverse: true, data: analysis.affinity_distribution.map((row) => row.mt_label) },
     series: [{ type: "bar", data: analysis.affinity_distribution.map((row, index) => ({ value: row.probability_mt_given_spbu * 100, itemStyle: { color: index === 0 ? "#b8d211" : "#0b73bf", borderRadius: [0, 7, 7, 0] } })), label: { show: true, position: "right", formatter: ({ value }: { value: number }) => `${value.toFixed(1)}%` } }]
@@ -376,10 +620,14 @@ export function AffinityIntelligencePage({ depots, products }: { depots: Depot[]
         formatter: ({ data }: { data: { row?: Analysis["scatter"][number] } }) => {
           const row = data.row;
           if (!row) return "";
-          return `<b>${row.spbu_name || row.spbu_code}</b><br/>Kode SPBU: ${row.spbu_code}<br/>Shipments: ${row.shipment_count}<br/>Unique MT: ${row.value[0]}<br/>Dominant: ${row.dominant_mt_label} (${percent(row.dominant_mt_probability)})<br/>Consistency: ${number(row.consistency_score, 1)}<br/>Variability: ${number(row.variability_score, 1)}<br/>Stability: ${number(row.temporal_stability_score, 1)}<br/>Confidence: ${row.confidence_level}`;
+          return `<b>${row.spbu_name || row.spbu_code}</b><br/>Kode SPBU: ${row.spbu_code}<br/>SPBU Tag: ${formatTags(row.spbu_tags)}<br/>Shipments: ${row.shipment_count}<br/>Unique MT: ${row.value[0]}<br/>Dominant: ${row.dominant_mt_label} (${percent(row.dominant_mt_probability)})<br/>Consistency: ${number(row.consistency_score, 1)}<br/>Variability: ${number(row.variability_score, 1)}<br/>Stability: ${number(row.temporal_stability_score, 1)}<br/>Confidence: ${row.confidence_level}`;
         }
       },
       legend: { top: 0, left: "center", data: confidenceGroups.map((group) => group.name), itemWidth: 12, itemHeight: 12 },
+      dataZoom: [
+        { id: "scatter-x-zoom", type: "inside", xAxisIndex: 0, filterMode: "none", start: scatterViewport.start, end: scatterViewport.end, zoomOnMouseWheel: true, moveOnMouseMove: true, moveOnMouseWheel: false },
+        { id: "scatter-y-zoom", type: "inside", yAxisIndex: 0, filterMode: "none", start: scatterViewport.start, end: scatterViewport.end, zoomOnMouseWheel: true, moveOnMouseMove: true, moveOnMouseWheel: false }
+      ],
       grid: { left: 55, right: 20, top: 55, bottom: 50 },
       xAxis: { name: "Unique MT Count", nameLocation: "middle", nameGap: 32, type: "value", minInterval: 1 },
       yAxis: { name: "Consistency", type: "value", min: 0, max: 100 },
@@ -395,15 +643,19 @@ export function AffinityIntelligencePage({ depots, products }: { depots: Depot[]
         symbolSize: (value: number[]) => Math.max(8, Math.min(28, 6 + Math.sqrt(value[2] ?? 0)))
       }))
     };
-  }, [analysis, selectedScatterPoint]);
+  }, [analysis, selectedScatterPoint, scatterViewport]);
 
   const matrixOption = useMemo(() => analysis ? ({
-    tooltip: { formatter: ({ dataIndex }: { dataIndex: number }) => { const row = analysis.pattern_matrix.points[dataIndex]; return `<b>${row.spbu_code}</b><br/>${row.quadrant}<br/>Unique MT: ${row.value[0]}<br/>Dominant affinity: ${percent(row.value[1])}<br/>Shipments: ${row.shipment_count}`; } },
+    tooltip: { formatter: ({ dataIndex }: { dataIndex: number }) => { const row = analysis.pattern_matrix.points[dataIndex]; return `<b>${row.spbu_code}</b><br/>SPBU Tag: ${formatTags(row.spbu_tags)}<br/>${row.quadrant}<br/>Unique MT: ${row.value[0]}<br/>Dominant affinity: ${percent(row.value[1])}<br/>Shipments: ${row.shipment_count}`; } },
+    dataZoom: [
+      { id: "matrix-x-zoom", type: "inside", xAxisIndex: 0, filterMode: "none", start: matrixViewport.start, end: matrixViewport.end, zoomOnMouseWheel: true, moveOnMouseMove: true, moveOnMouseWheel: false },
+      { id: "matrix-y-zoom", type: "inside", yAxisIndex: 0, filterMode: "none", start: matrixViewport.start, end: matrixViewport.end, zoomOnMouseWheel: true, moveOnMouseMove: true, moveOnMouseWheel: false }
+    ],
     grid: { left: 55, right: 25, top: 25, bottom: 50 },
     xAxis: { name: "Unique MT", nameLocation: "middle", nameGap: 32, type: "value", minInterval: 1 },
     yAxis: { name: "Dominant Affinity", type: "value", min: 0, max: 1, axisLabel: { formatter: (value: number) => `${Math.round(value * 100)}%` } },
     series: [{ type: "scatter", data: analysis.pattern_matrix.points.map((row) => ({ value: row.value, itemStyle: { color: row.quadrant === "DEDICATED-LIKE" ? "#0b73bf" : row.quadrant === "PREFERRED-FLEET" ? "#b8d211" : row.quadrant === "HIGHLY FLEXIBLE" ? "#ea4a43" : "#94a3b8" } })), symbolSize: 11, markLine: { silent: true, symbol: "none", lineStyle: { type: "dashed", color: "#94a3b8" }, data: [{ xAxis: analysis.pattern_matrix.unique_mt_split }, { yAxis: analysis.pattern_matrix.affinity_split }] } }]
-  }) : null, [analysis]);
+  }) : null, [analysis, matrixViewport]);
 
   const reverseOption = useMemo(() => analysis?.reverse_detail ? ({
     grid: { left: 100, right: 50, top: 15, bottom: 30 },
@@ -414,7 +666,12 @@ export function AffinityIntelligencePage({ depots, products }: { depots: Depot[]
   }) : null, [analysis]);
 
   const networkOption = useMemo(() => analysis ? ({
-    tooltip: { formatter: (params: { dataType: string; data: Record<string, string | number> }) => params.dataType === "edge" ? `<b>${params.data.spbu_code} ↔ ${params.data.mt_label}</b><br/>Historical Shipments: ${params.data.shipment_count}<br/>P(MT | SPBU): ${percent(Number(params.data.probability_mt_given_spbu))}<br/>P(SPBU | MT): ${percent(Number(params.data.probability_spbu_given_mt))}<br/>First: ${dateLabel(String(params.data.first_observed))}<br/>Last: ${dateLabel(String(params.data.last_observed))}<br/>Operating Days: ${params.data.operating_day_count}<br/>Confidence: ${params.data.confidence_level}` : `<b>${params.data.entity_type}</b><br/>${params.data.name}` },
+    tooltip: { formatter: (params: { dataType: string; data: Record<string, unknown> }) => {
+      const data = params.data;
+      if (params.dataType === "edge") return `<b>${String(data.spbu_code)} ↔ ${String(data.mt_label)}</b><br/>SPBU Tag: ${formatTags(data.spbu_tags as string[])}<br/>MT Tag: ${formatTags(data.mt_tags as string[])}<br/>Historical Shipments: ${String(data.shipment_count)}<br/>P(MT | SPBU): ${percent(Number(data.probability_mt_given_spbu))}<br/>P(SPBU | MT): ${percent(Number(data.probability_spbu_given_mt))}<br/>First: ${dateLabel(String(data.first_observed))}<br/>Last: ${dateLabel(String(data.last_observed))}<br/>Operating Days: ${String(data.operating_day_count)}<br/>Confidence: ${String(data.confidence_level)}`;
+      const entityType = String(data.entity_type);
+      return `<b>${entityType}</b><br/>${String(data.name)}<br/>${entityType} Tag: ${formatTags(data.tags as string[])}`;
+    } },
     legend: [{ data: analysis.network.categories.map((row) => row.name), bottom: 0 }],
     series: [{ type: "graph", layout: "force", roam: true, draggable: true, categories: analysis.network.categories, data: analysis.network.nodes.map((row) => ({ ...row, itemStyle: { color: row.category === 0 ? "#0b73bf" : "#b8d211", borderColor: row.selected ? "#ea4a43" : "#fff", borderWidth: row.selected ? 4 : 1 }, label: { show: row.selected, position: "right" } })), links: analysis.network.edges.map((row) => ({ ...row, lineStyle: { width: row.highlighted ? 4 : Math.max(1, Math.min(6, Math.sqrt(row.shipment_count))), opacity: row.highlighted ? 0.95 : 0.35, color: row.highlighted ? "#ea4a43" : "#94a3b8", curveness: 0.08 } })), force: { repulsion: 130, edgeLength: [60, 160] }, emphasis: { focus: "adjacency", lineStyle: { width: 5, opacity: 1 } } }]
   }) : null, [analysis]);
@@ -422,13 +679,46 @@ export function AffinityIntelligencePage({ depots, products }: { depots: Depot[]
   const kpis: Array<[string, number, number?]> = analysis ? [
     ["Eligible Shipments", analysis.summary.total_eligible_shipments], ["SPBU Analyzed", analysis.summary.spbu_analyzed], ["MT Observed", analysis.summary.mt_observed], ["Unique SPBU–MT Pairs", analysis.summary.unique_spbu_mt_pairs], ["Avg MT / SPBU", analysis.summary.average_mt_per_spbu, 2], ["Median MT / SPBU", analysis.summary.median_mt_per_spbu, 1], ["High Consistency", analysis.summary.high_consistency_spbu], ["High Variability", analysis.summary.high_variability_spbu], ["Low Stability", analysis.summary.low_stability_spbu], ["Pattern Shifts", analysis.summary.historical_pattern_shifts]
   ] : [];
+  const savedShowingStart = savedConfigTotal === 0 ? 0 : savedConfigOffset + 1;
+  const savedShowingEnd = Math.min(savedConfigOffset + savedConfigLimit, savedConfigTotal);
+  const savedPageNumber = Math.floor(savedConfigOffset / savedConfigLimit) + 1;
+  const savedPageCount = Math.max(1, Math.ceil(savedConfigTotal / savedConfigLimit));
+  const canPreviousSavedPage = savedConfigOffset > 0 && !savedConfigLoading;
+  const canNextSavedPage = savedConfigOffset + savedConfigLimit < savedConfigTotal && !savedConfigLoading;
 
   return (
     <>
+      {saveModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 px-4">
+          <div className="w-full max-w-lg border border-line bg-white p-5 shadow-card">
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div><div className="text-sm font-semibold uppercase tracking-wide text-slate-600">Save Affinity Analysis Configuration</div><div className="mt-1 text-xs text-slate-500">The current Phase 4 filters, selected SPBU–MT detail, chart viewport, and analysis snapshot will be stored in the backend.</div></div>
+              <button className="inline-flex h-8 w-8 items-center justify-center border border-line" onClick={() => setSaveModalOpen(false)} title="Close save configuration"><X size={16} /></button>
+            </div>
+            <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Configuration Name<input className="mt-2 w-full border border-line px-3 py-2 text-sm font-normal normal-case tracking-normal" value={saveName} onChange={(event) => setSaveName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void saveConfig(); }} autoFocus placeholder="Example: Medan affinity baseline" /></label>
+            <div className="mt-5 flex items-center justify-end gap-2"><button className="border border-line px-3 py-2 text-sm" onClick={() => setSaveModalOpen(false)}>Cancel</button><button className="inline-flex items-center gap-2 bg-petroblue px-3 py-2 text-sm font-medium text-white disabled:opacity-60" onClick={() => void saveConfig()} disabled={savedConfigLoading || !saveName.trim()}><Save size={14} /> Save</button></div>
+          </div>
+        </div>
+      )}
+      {loadModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 px-4">
+          <div className="w-full max-w-xl border border-line bg-white p-5 shadow-card">
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div><div className="text-sm font-semibold uppercase tracking-wide text-slate-600">Load Affinity Analysis Configuration</div><div className="mt-1 text-xs text-slate-500">Loading restores the saved Phase 4 filters, selected SPBU–MT detail, chart viewport, and analysis snapshot.</div></div>
+              <button className="inline-flex h-8 w-8 items-center justify-center border border-line" onClick={() => setLoadModalOpen(false)} title="Close load configuration"><X size={16} /></button>
+            </div>
+            <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Saved Configuration<select className="mt-2 w-full border border-line bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal" value={selectedSavedConfigId} onChange={(event) => setSelectedSavedConfigId(event.target.value)}>{savedConfigs.map((config) => <option key={config.id} value={config.id}>{config.name} | {config.depot_name ?? config.depot_id} | {dateLabel(config.start_date)} – {dateLabel(config.end_date)}</option>)}</select></label>
+            <div className="mt-5 flex items-center justify-end gap-2"><button className="border border-line px-3 py-2 text-sm" onClick={() => setLoadModalOpen(false)}>Cancel</button><button className="inline-flex items-center gap-2 bg-petroblue px-3 py-2 text-sm font-medium text-white disabled:opacity-60" onClick={() => void loadConfig()} disabled={savedConfigLoading || !selectedSavedConfigId}><RefreshCw size={14} /> Load</button></div>
+          </div>
+        </div>
+      )}
       <section className="mb-5 border border-line bg-white p-4">
-        <div className="mb-4 flex flex-col gap-1"><div className="text-sm font-semibold uppercase tracking-wide text-slate-600">Phase 4 — SPBU–MT Historical Affinity & Stability Intelligence</div><div className="text-xs text-slate-500">Measures assignments that historically occurred. It does not optimize or recommend future MT assignments.</div></div>
+        <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div><div className="text-sm font-semibold uppercase tracking-wide text-slate-600">Phase 4 — SPBU–MT Historical Affinity & Stability Intelligence</div><div className="mt-1 text-xs text-slate-500">Measures assignments that historically occurred. It does not optimize or recommend future MT assignments.</div></div>
+          <div className="flex flex-col items-start gap-2 lg:items-end"><div className="flex flex-wrap gap-2"><button className="inline-flex items-center gap-2 border border-line px-3 py-2 text-sm disabled:opacity-50" onClick={openLoadModal} disabled={savedConfigLoading || savedConfigTotal === 0} title="Load a saved affinity analysis configuration"><RefreshCw size={14} /> Load</button><button className="inline-flex items-center gap-2 border border-line px-3 py-2 text-sm disabled:opacity-50" onClick={openSaveModal} disabled={loading || !analysis} title="Save current affinity configuration and analysis result"><Save size={14} /> Save</button></div>{configMessage && <div className="text-xs text-slate-500">{configMessage}</div>}</div>
+        </div>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5 xl:grid-cols-6">
-          <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Depot<select className="mt-1 w-full border border-line px-3 py-2 text-sm font-normal normal-case" value={filters.depotId} onChange={(event) => { setAnalysis(null); setAppliedFilters(null); setSpbuSearch(""); setFilters((current) => ({ ...current, depotId: event.target.value, spbuId: "" })); }}><option value="">Select Depot</option>{depots.map((depot) => <option key={depot.depot_id} value={depot.depot_id}>{depot.depot_name}</option>)}</select></label>
+          <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Depot<select className="mt-1 w-full border border-line px-3 py-2 text-sm font-normal normal-case" value={filters.depotId} onChange={(event) => { setAnalysis(null); setAppliedFilters(null); setSpbuSearch(""); setSavedConfigOffset(0); setFilters((current) => ({ ...current, depotId: event.target.value, spbuId: "" })); }}><option value="">Select Depot</option>{depots.map((depot) => <option key={depot.depot_id} value={depot.depot_id}>{depot.depot_name}</option>)}</select></label>
           <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Search SPBU<input className="mt-1 w-full border border-line px-3 py-2 text-sm font-normal normal-case" type="search" list="phase4-spbu-options" value={spbuSearch} placeholder="Code or SPBU name" disabled={!filters.depotId} onChange={(event) => { const value = event.target.value; const matched = resolveSpbu(value); setSpbuSearch(value); setFilters((current) => ({ ...current, spbuId: matched?.spbu_id ?? "" })); }} /><datalist id="phase4-spbu-options">{searchableSpbus.map((row) => <option key={row.spbu_id} value={spbuLabel(row)} />)}</datalist></label>
           <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Start Date<input className="mt-1 w-full border border-line px-3 py-2 text-sm font-normal" type="date" value={filters.startDate} min={availability?.min_date ?? undefined} max={availability?.max_date ?? undefined} disabled={dateLoading} onChange={(event) => setFilters((current) => ({ ...current, startDate: event.target.value }))} /></label>
           <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">End Date<input className="mt-1 w-full border border-line px-3 py-2 text-sm font-normal" type="date" value={filters.endDate} min={availability?.min_date ?? undefined} max={availability?.max_date ?? undefined} disabled={dateLoading} onChange={(event) => setFilters((current) => ({ ...current, endDate: event.target.value }))} /></label>
@@ -441,6 +731,11 @@ export function AffinityIntelligencePage({ depots, products }: { depots: Depot[]
           <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Network Edge<select className="mt-1 w-full border border-line px-3 py-2 text-sm font-normal" value={filters.edgeMetric} onChange={(event) => setFilters((current) => ({ ...current, edgeMetric: event.target.value }))}><option value="SHIPMENT_COUNT">Shipment Count</option><option value="AFFINITY_PROBABILITY">Affinity Probability</option></select></label>
         </div>
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3"><div className="text-xs text-slate-500">{availability?.min_date ? `Available: ${dateLabel(availability.min_date)} – ${dateLabel(availability.max_date)}` : filters.depotId ? "No shipment dates available." : "Select a depot to load its historical date coverage."}</div><button className="inline-flex items-center gap-2 rounded-full bg-petroblue px-5 py-2 text-sm font-semibold text-white disabled:opacity-50" disabled={loading || dateLoading} onClick={apply}><RefreshCw size={15} className={loading ? "animate-spin" : ""} />{loading ? "Running" : "Apply"}</button></div>
+        <div className="mt-4 border border-line">
+          <div className="flex flex-col gap-2 border-b border-line bg-slate-50 px-3 py-2 lg:flex-row lg:items-center lg:justify-between"><div><div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Saved SPBU–MT Affinity Analysis Configurations</div><div className="mt-1 text-xs text-slate-500">Showing {savedShowingStart}-{savedShowingEnd} of {savedConfigTotal.toLocaleString()}</div></div><select className="border border-line bg-white px-2 py-1 text-xs" value={savedConfigLimit} onChange={(event) => { setSavedConfigOffset(0); setSavedConfigLimit(Number(event.target.value)); }} title="Saved configurations per page"><option value={5}>5 rows</option><option value={10}>10 rows</option><option value={25}>25 rows</option></select></div>
+          <div className="overflow-x-auto"><table className="w-full border-collapse text-sm"><thead><tr className="border-b border-line text-left text-xs uppercase tracking-wide text-slate-500"><th className="whitespace-nowrap px-3 py-2">Name</th><th className="whitespace-nowrap px-3 py-2">Depot</th><th className="whitespace-nowrap px-3 py-2">Period</th><th className="whitespace-nowrap px-3 py-2">Product</th><th className="whitespace-nowrap px-3 py-2">SPBU</th><th className="whitespace-nowrap px-3 py-2">MT</th><th className="whitespace-nowrap px-3 py-2">Saved</th><th className="whitespace-nowrap px-3 py-2">Action</th></tr></thead><tbody>{savedConfigs.map((config) => <tr key={config.id} className="border-b border-line"><td className="whitespace-nowrap px-3 py-2 font-medium">{config.name}</td><td className="whitespace-nowrap px-3 py-2">{config.depot_name ?? config.depot_id}</td><td className="whitespace-nowrap px-3 py-2">{dateLabel(config.start_date)} – {dateLabel(config.end_date)}</td><td className="whitespace-nowrap px-3 py-2">{config.product_name}</td><td className="whitespace-nowrap px-3 py-2">{number(config.spbu_analyzed)}</td><td className="whitespace-nowrap px-3 py-2">{number(config.mt_observed)}</td><td className="whitespace-nowrap px-3 py-2">{dateTimeLabel(config.updated_at)}</td><td className="whitespace-nowrap px-3 py-2"><button className="inline-flex items-center justify-center border border-line px-2 py-1 text-xs text-rust disabled:opacity-50" onClick={() => void deleteSavedConfig(config)} disabled={savedConfigLoading} title="Delete saved configuration"><Trash2 size={13} /></button></td></tr>)}{savedConfigs.length === 0 && <tr><td className="px-3 py-8 text-center text-sm text-slate-500" colSpan={8}>No saved affinity analysis configuration.</td></tr>}</tbody></table></div>
+          <div className="flex items-center justify-between gap-3 px-3 py-2 text-sm"><button className="border border-line px-3 py-2 disabled:opacity-50" onClick={() => setSavedConfigOffset(Math.max(0, savedConfigOffset - savedConfigLimit))} disabled={!canPreviousSavedPage}>Previous</button><span className="text-slate-500">Page {savedPageNumber} of {savedPageCount}</span><button className="border border-line px-3 py-2 disabled:opacity-50" onClick={() => setSavedConfigOffset(savedConfigOffset + savedConfigLimit)} disabled={!canNextSavedPage}>Next</button></div>
+        </div>
       </section>
 
       {error && <div className="mb-5 rounded-2xl border border-rust bg-white px-4 py-3 text-sm text-rust">{error}</div>}
@@ -451,7 +746,18 @@ export function AffinityIntelligencePage({ depots, products }: { depots: Depot[]
 
         <section className="mb-5 border border-line bg-white p-4"><div className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-600">Data Quality Summary</div><div className="grid gap-2 text-sm">{[["Source Shipments", analysis.data_quality.source_shipments], ["Eligible Shipments", analysis.data_quality.eligible_shipments], ["Excluded Shipments", analysis.data_quality.excluded_shipments], ["Eligible %", `${number(analysis.data_quality.eligible_pct, 1)}%`], ["Duplicate Observations Removed", analysis.data_quality.duplicate_observations_removed]].map(([label, value]) => <div key={label} className="flex items-center justify-between border-b border-line pb-2"><span>{label}</span><span className="font-semibold">{typeof value === "number" ? number(value) : value}</span></div>)}</div><div className="mt-3 space-y-1 text-xs text-slate-500">{analysis.data_quality.exclusion_reasons.map((row) => <div key={row.reason}>{row.reason}: {number(row.count)}</div>)}{analysis.data_quality.exclusion_reasons.length === 0 && <div>No exclusions in the active scope.</div>}</div><div className="mt-4 rounded-2xl bg-petrocloud p-3 text-xs text-slate-600">Bucket used: <b>{String(analysis.effective_filters.temporal_bucket_used)}</b><br/>Algorithm: <b>{analysis.algorithm_version}</b></div></section>
 
-        <section className="mb-5 grid gap-4 lg:grid-cols-2"><section className="relative border border-line bg-white p-4"><div className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-600">SPBU Consistency Scatter Plot</div>{selectedScatterPoint && <div className="absolute right-6 top-16 z-10 min-w-56 rounded-2xl border border-petroblue/20 bg-white/95 p-3 shadow-card"><button className="absolute right-2 top-1 text-lg leading-none text-slate-400 hover:text-petroink" onClick={() => setSelectedScatterPoint(null)} title="Close selected SPBU popup">×</button><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Selected SPBU</div><div className="mt-1 pr-5 font-semibold text-petroink">{selectedScatterPoint.spbu_name || selectedScatterPoint.spbu_code}</div>{selectedScatterPoint.spbu_name && <div className="mt-1 text-xs text-slate-500">Kode: {selectedScatterPoint.spbu_code}</div>}<div className="mt-2 text-xs text-slate-500">Confidence: <b>{selectedScatterPoint.confidence_level}</b></div></div>}{scatterOption && <ReactECharts option={scatterOption} style={{ height: 360 }} onEvents={{ click: (params: { data?: { row?: Analysis["scatter"][number] } }) => { const row = params.data?.row; if (row) { setSelectedScatterPoint(row); selectSpbu(row.spbu_id); } } }} />}</section><section className="border border-line bg-white p-4"><div className="mb-1 text-sm font-semibold uppercase tracking-wide text-slate-600">Historical Pattern Matrix</div><div className="mb-2 text-xs text-slate-500">Dashed lines use 60% dominant affinity and the active SPBU median unique-MT count.</div>{matrixOption && <ReactECharts option={matrixOption} style={{ height: 350 }} onEvents={{ click: (params: { dataIndex?: number }) => { const row = analysis.pattern_matrix.points[params.dataIndex ?? -1]; if (row) selectSpbu(row.spbu_id); } }} />}</section></section>
+        <section className="mb-5 grid gap-4 lg:grid-cols-2">
+          <section className="relative border border-line bg-white p-4">
+            <div className="mb-3 flex items-center justify-between gap-3"><div className="text-sm font-semibold uppercase tracking-wide text-slate-600">SPBU Consistency Scatter Plot</div><ChartInteractionToolbar mode={scatterInteractionMode} onModeChange={setScatterInteractionMode} onZoom={() => zoomInChart(scatterChartRef, scatterViewport, setScatterViewport)} onFit={() => fitChart(scatterChartRef, setScatterInteractionMode, setScatterViewport)} /></div>
+            {selectedScatterPoint && <div className="absolute right-6 top-16 z-10 min-w-56 max-w-80 rounded-2xl border border-petroblue/20 bg-white/95 p-3 shadow-card"><button className="absolute right-2 top-1 text-lg leading-none text-slate-400 hover:text-petroink" onClick={() => setSelectedScatterPoint(null)} title="Close selected SPBU popup">×</button><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Selected SPBU</div><div className="mt-1 pr-5 font-semibold text-petroink">{selectedScatterPoint.spbu_name || selectedScatterPoint.spbu_code}</div>{selectedScatterPoint.spbu_name && <div className="mt-1 text-xs text-slate-500">Kode: {selectedScatterPoint.spbu_code}</div>}<div className="mt-2 text-xs text-slate-500">SPBU Tag: <b>{formatTags(selectedScatterPoint.spbu_tags)}</b></div><div className="mt-1 text-xs text-slate-500">Confidence: <b>{selectedScatterPoint.confidence_level}</b></div></div>}
+            {scatterOption && <div className={scatterInteractionMode === "zoom" ? "cursor-zoom-in" : "cursor-grab"}><ReactECharts ref={scatterChartRef} option={scatterOption} style={{ height: 360 }} onEvents={{ click: (params: { data?: { row?: Analysis["scatter"][number] } }) => { const row = params.data?.row; if (row) { setSelectedScatterPoint(row); selectSpbu(row.spbu_id); } } }} /></div>}
+          </section>
+          <section className="border border-line bg-white p-4">
+            <div className="mb-1 flex items-center justify-between gap-3"><div className="text-sm font-semibold uppercase tracking-wide text-slate-600">Historical Pattern Matrix</div><ChartInteractionToolbar mode={matrixInteractionMode} onModeChange={setMatrixInteractionMode} onZoom={() => zoomInChart(matrixChartRef, matrixViewport, setMatrixViewport)} onFit={() => fitChart(matrixChartRef, setMatrixInteractionMode, setMatrixViewport)} /></div>
+            <div className="mb-2 text-xs text-slate-500">Dashed lines use 60% dominant affinity and the active SPBU median unique-MT count.</div>
+            {matrixOption && <div className={matrixInteractionMode === "zoom" ? "cursor-zoom-in" : "cursor-grab"}><ReactECharts ref={matrixChartRef} option={matrixOption} style={{ height: 350 }} onEvents={{ click: (params: { dataIndex?: number }) => { const row = analysis.pattern_matrix.points[params.dataIndex ?? -1]; if (row) selectSpbu(row.spbu_id); } }} /></div>}
+          </section>
+        </section>
 
         <section className="mb-5 grid gap-4 xl:grid-cols-3"><RankingTable title="Most Historically Consistent SPBU" rows={analysis.rankings.most_consistent} variant="consistent" onSelect={selectSpbu} /><RankingTable title="Most Historically Variable SPBU" rows={analysis.rankings.most_variable} variant="variable" onSelect={selectSpbu} /><RankingTable title="Highest Historical Pattern Change" rows={analysis.rankings.least_stable} variant="stable" onSelect={selectSpbu} /></section>
 
@@ -462,7 +768,7 @@ export function AffinityIntelligencePage({ depots, products }: { depots: Depot[]
         <section className="mb-5 border border-line bg-white p-4">
           <div className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-600">SPBU–MT Historical Profile</div>
           {analysis.selected_spbu_profile ? <><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{[
-            ["SPBU", analysis.selected_spbu_profile.spbu_code], ["Historical Shipments", number(analysis.selected_spbu_profile.shipment_count)], ["Operating Days", number(analysis.selected_spbu_profile.operating_day_count)], ["Unique MT Used", number(analysis.selected_spbu_profile.unique_mt_count)], ["Dominant Historical MT", analysis.selected_spbu_profile.dominant_mt_label], ["Dominant Probability", percent(analysis.selected_spbu_profile.dominant_mt_probability)], ["Top-3 MT Share", percent(analysis.selected_spbu_profile.top3_mt_share)], ["Historical Pattern", analysis.selected_spbu_profile.historical_pattern]
+            ["SPBU", analysis.selected_spbu_profile.spbu_code], ["SPBU Tag", formatTags(analysis.selected_spbu_profile.spbu_tags)], ["Historical Shipments", number(analysis.selected_spbu_profile.shipment_count)], ["Operating Days", number(analysis.selected_spbu_profile.operating_day_count)], ["Unique MT Used", number(analysis.selected_spbu_profile.unique_mt_count)], ["Dominant Historical MT", analysis.selected_spbu_profile.dominant_mt_label], ["Dominant Probability", percent(analysis.selected_spbu_profile.dominant_mt_probability)], ["Top-3 MT Share", percent(analysis.selected_spbu_profile.top3_mt_share)], ["Historical Pattern", analysis.selected_spbu_profile.historical_pattern]
           ].map(([label, value]) => <div key={label} className="rounded-2xl border border-line p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label}</div><div className="mt-1 font-semibold">{value}</div></div>)}</div>
             <div className="mt-4 grid gap-4 md:grid-cols-2"><MetricTrack label="MT Consistency" value={analysis.selected_spbu_profile.consistency_score} /><MetricTrack label="Historical Variability" value={analysis.selected_spbu_profile.variability_score} color="#ea4a43" /><MetricTrack label="Temporal Stability" value={analysis.selected_spbu_profile.temporal_stability_score} color="#b8d211" /><MetricTrack label="Evidence Confidence" value={analysis.selected_spbu_profile.confidence_score} color="#15385b" /></div>
             <div className="mt-4 flex flex-wrap gap-2"><span className={`border px-2 py-1 text-xs font-semibold ${confidenceClass(analysis.selected_spbu_profile.confidence_level)}`}>Confidence {analysis.selected_spbu_profile.confidence_level}</span><span className={`border px-2 py-1 text-xs font-semibold ${shiftClass(analysis.selected_spbu_profile.pattern_shift_level)}`}>{analysis.selected_spbu_profile.pattern_shift_level}</span><span className="border border-line px-2 py-1 text-xs font-semibold">{analysis.selected_spbu_profile.consistency_classification}</span><span className="border border-line px-2 py-1 text-xs">Dominant persistence {number(analysis.selected_spbu_profile.dominant_mt_persistence, 1)}%</span></div>

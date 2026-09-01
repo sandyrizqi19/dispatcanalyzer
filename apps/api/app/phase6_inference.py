@@ -6,7 +6,7 @@ import math
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -103,6 +103,8 @@ def load_model_inference_evidence(db: Session, model: MLBehavioralModel) -> dict
                 "spbu_id": row.spbu_id,
                 "cluster_id": row.cluster_id,
                 "membership_probability": row.membership_probability,
+                "projection_confidence": row.projection_confidence,
+                "cluster_assignment_type": row.cluster_assignment_type,
                 "is_noise": row.is_noise,
                 "dominant_shift": row.dominant_shift,
             }
@@ -121,6 +123,18 @@ def confidence_level(score: float, parameters: dict) -> str:
     if score >= float(parameters["medium_confidence_threshold"]):
         return "MEDIUM"
     return "LOW"
+
+
+def _phase5_assignment_confidence(assignment: dict | None) -> float:
+    if not assignment:
+        return 0.0
+    membership = assignment.get("membership_probability")
+    if membership is not None:
+        return max(0.0, float(membership))
+    projection = assignment.get("projection_confidence")
+    if assignment.get("cluster_assignment_type") == "MARGINAL_PROJECTED" and projection is not None:
+        return max(0.0, float(projection))
+    return 0.0
 
 
 def _haversine_km(first: tuple[float, float], second: tuple[float, float]) -> float:
@@ -222,6 +236,7 @@ def _group_metrics(
     )
     return {
         "capacity_valid": bool(capacity["valid"] and capacity["required_compartments"] <= maximum_compartments),
+        "required_compartments": int(capacity["required_compartments"]),
         "model_score": round(model_score, 6),
         "pair_coverage": round(pair_coverage, 6),
         "time_span_minutes": round(span_seconds / 60, 3),
@@ -241,6 +256,8 @@ def _optimized_capacity_time_route_groups(
     maximum_gap_seconds: int,
     maximum_compartments: int,
     maximum_detour_ratio: float,
+    target_compartments: int | None = None,
+    group_feasibility: Callable[[list[dict]], bool] | None = None,
 ) -> tuple[list[list[int]], dict[frozenset[int], dict], str]:
     """Select disjoint multi-LO groups through binary set-packing optimization.
 
@@ -255,6 +272,7 @@ def _optimized_capacity_time_route_groups(
         adjacency[right].add(left)
 
     candidate_metrics: dict[frozenset[int], dict] = {}
+    selectable_groups: set[frozenset[int]] = set()
     beam_width = 48
     for seed in range(len(rows)):
         frontier = [frozenset((seed,))]
@@ -291,6 +309,20 @@ def _optimized_capacity_time_route_groups(
                         continue
                     candidate_metrics[combined] = metrics
                     expanded.add(combined)
+                    is_target_capacity = (
+                        target_compartments is None
+                        or metrics["required_compartments"] == target_compartments
+                    )
+                    operationally_feasible = bool(
+                        is_target_capacity
+                        and (
+                            group_feasibility is None
+                            or group_feasibility([rows[index] for index in sorted(combined)])
+                        )
+                    )
+                    metrics["operational_mt_feasible"] = operationally_feasible
+                    if operationally_feasible:
+                        selectable_groups.add(combined)
             frontier = sorted(
                 expanded,
                 key=lambda group: (-candidate_metrics[group]["optimizer_value"], tuple(sorted(group))),
@@ -299,7 +331,7 @@ def _optimized_capacity_time_route_groups(
                 break
 
     candidates = sorted(
-        candidate_metrics,
+        selectable_groups,
         key=lambda group: (-candidate_metrics[group]["optimizer_value"], tuple(sorted(group))),
     )[:10_000]
     selected: list[frozenset[int]] = []
@@ -352,7 +384,9 @@ def predict_shipments(
     for profile in evidence.get("cluster_profiles", []):
         for pair in profile.get("inference_internal_pairings") or profile.get("top_internal_pairings", []):
             pairing_by_codes[frozenset((str(pair["spbu_a_code"]), str(pair["spbu_b_code"])))] = float(pair["pairing_strength"])
-    weights = {**{"tag": 0.4, "shift": 0.25, "pairing": 0.35}, **(model.feature_weights or {})}
+    raw_weights = {**{"tag": 0.4, "shift": 0.25, "pairing": 0.35}, **(model.feature_weights or {})}
+    behavioral_total = sum(float(raw_weights[key]) for key in ("tag", "shift", "pairing")) or 1.0
+    weights = {key: float(raw_weights[key]) / behavioral_total for key in ("tag", "shift", "pairing")}
     by_shift: dict[str, list[dict]] = defaultdict(list)
     for row in loading_orders:
         by_shift[row["shift_id"]].append(row)
@@ -361,6 +395,9 @@ def predict_shipments(
     maximum_gap_seconds = int(parameters.get("maximum_pairing_time_gap_minutes", 90)) * 60
     maximum_compartments = int(parameters.get("maximum_shipment_compartments", 4))
     maximum_detour_ratio = float(parameters.get("maximum_group_route_detour_ratio", 2.0))
+    target_compartments = parameters.get("target_shipment_compartments")
+    target_compartments = int(target_compartments) if target_compartments is not None else None
+    group_feasibility = parameters.get("_group_feasibility")
     routing_context = evidence.get("routing_context") or {}
     for shift_id in sorted(by_shift):
         rows = sorted(by_shift[shift_id], key=lambda row: (row["shipment_start_datetime"], row["spbu_no"], row["loading_order_no"]))
@@ -375,7 +412,7 @@ def predict_shipments(
                 first, second = assignments.get(rows[left]["spbu_id"]), assignments.get(rows[right]["spbu_id"])
                 if not first or not second or first.get("is_noise") or second.get("is_noise") or first.get("cluster_id") != second.get("cluster_id"):
                     continue
-                cluster_match = math.sqrt(max(0.0, float(first.get("membership_probability", 0))) * max(0.0, float(second.get("membership_probability", 0))))
+                cluster_match = math.sqrt(_phase5_assignment_confidence(first) * _phase5_assignment_confidence(second))
                 shift_match = (
                     float((first.get("dominant_shift") == rows[left]["shift"]) + (second.get("dominant_shift") == rows[right]["shift"])) / 2.0
                 )
@@ -403,6 +440,8 @@ def predict_shipments(
             maximum_gap_seconds=maximum_gap_seconds,
             maximum_compartments=maximum_compartments,
             maximum_detour_ratio=maximum_detour_ratio,
+            target_compartments=target_compartments,
+            group_feasibility=group_feasibility,
         )
         groups.sort(key=lambda group: (max(rows[index]["shipment_start_datetime"] for index in group), min(rows[index]["loading_order_no"] for index in group)))
         for number, group in enumerate(groups, start=1):
@@ -431,7 +470,7 @@ def predict_shipments(
                 }
             else:
                 assignment = assignments.get(selected_rows[0]["spbu_id"])
-                score = round(float(assignment.get("membership_probability", 0.0)), 6) if assignment else 0.0
+                score = round(_phase5_assignment_confidence(assignment), 6)
                 if not assignment:
                     model_coverage = "UNSEEN_SPBU"
                 elif assignment.get("is_noise"):

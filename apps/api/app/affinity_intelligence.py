@@ -6,10 +6,11 @@ import math
 import statistics
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
-from .models import FactLoadingOrderLine, FactShipment, FactShipmentSPBU, MasterDepot, MasterMT, MasterProduct, MasterSPBU
+from .models import AffinityAnalysisConfig, BridgeMTTag, BridgeSPBUTag, FactLoadingOrderLine, FactShipment, FactShipmentSPBU, MasterDepot, MasterMT, MasterProduct, MasterSPBU, MasterTag
+from .normalization import clean_str, make_id, normalize_key
 
 
 ALGORITHM_VERSION = "spbu_mt_affinity.jsd_v1"
@@ -22,6 +23,182 @@ CLASSIFICATION_THRESHOLDS = {
 CONFIDENCE_THRESHOLDS = {"medium": 40.0, "high": 70.0}
 SHIFT_THRESHOLDS = {"stable": 0.10, "minor": 0.25, "moderate": 0.50}
 CONFIDENCE_RANK = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
+
+
+def list_saved_affinity_analysis_configs(db: Session, depot_id: str | None = None, limit: int = 10, offset: int = 0) -> dict:
+    filters = [AffinityAnalysisConfig.depot_id == depot_id] if depot_id else []
+    bounded_limit = max(1, min(limit, 100))
+    bounded_offset = max(0, offset)
+    total = db.scalar(select(func.count()).select_from(AffinityAnalysisConfig).where(*filters)) or 0
+    rows = db.scalars(
+        select(AffinityAnalysisConfig)
+        .where(*filters)
+        .order_by(desc(AffinityAnalysisConfig.updated_at), desc(AffinityAnalysisConfig.created_at))
+        .limit(bounded_limit)
+        .offset(bounded_offset)
+    ).all()
+    depot_ids = sorted({row.depot_id for row in rows})
+    product_ids = sorted({row.product_id for row in rows if row.product_id})
+    depot_names = {
+        depot.depot_id: depot.depot_name
+        for depot in db.scalars(select(MasterDepot).where(MasterDepot.depot_id.in_(depot_ids))).all()
+    } if depot_ids else {}
+    product_names = {
+        product.product_id: product.product_name
+        for product in db.scalars(select(MasterProduct).where(MasterProduct.product_id.in_(product_ids))).all()
+    } if product_ids else {}
+    return {
+        "total": total,
+        "limit": bounded_limit,
+        "offset": bounded_offset,
+        "rows": [
+            serialize_saved_affinity_analysis_config(
+                row,
+                depot_names.get(row.depot_id),
+                product_names.get(row.product_id) if row.product_id else "All Products",
+                include_snapshot=False,
+            )
+            for row in rows
+        ],
+    }
+
+
+def get_saved_affinity_analysis_config(db: Session, config_id: str) -> dict:
+    config = db.get(AffinityAnalysisConfig, config_id)
+    if not config:
+        raise HTTPException(status_code=404, detail="Saved affinity analysis configuration not found.")
+    depot = db.get(MasterDepot, config.depot_id)
+    product = db.get(MasterProduct, config.product_id) if config.product_id else None
+    return serialize_saved_affinity_analysis_config(
+        config,
+        depot.depot_name if depot else None,
+        product.product_name if product else "All Products",
+        include_snapshot=True,
+    )
+
+
+def save_affinity_analysis_config(db: Session, payload: dict) -> dict:
+    name = clean_str(payload.get("name"))
+    if not name:
+        raise HTTPException(status_code=400, detail="Configuration name is required.")
+    normalized_name = normalize_key(name)
+    if not normalized_name:
+        raise HTTPException(status_code=400, detail="Configuration name is invalid.")
+
+    snapshot = payload.get("affinity_analysis_snapshot") or {}
+    if not snapshot:
+        raise HTTPException(status_code=400, detail="Affinity analysis snapshot is required.")
+    filters = snapshot.get("effective_filters") or {}
+    depot_id = clean_str(payload.get("depot_id")) or clean_str(filters.get("depot_id"))
+    if not depot_id or not db.get(MasterDepot, depot_id):
+        raise HTTPException(status_code=400, detail="A valid depot is required.")
+    product_id = clean_str(payload.get("product_id")) or clean_str(filters.get("product_id"))
+    product = db.get(MasterProduct, product_id) if product_id else None
+    if product_id and not product:
+        raise HTTPException(status_code=400, detail="A valid product is required.")
+
+    start_date = parse_affinity_config_date(payload.get("start_date") or filters.get("start_date"), "start_date")
+    end_date = parse_affinity_config_date(payload.get("end_date") or filters.get("end_date"), "end_date")
+    selected_spbu_id = clean_str(payload.get("selected_spbu_id"))
+    selected_mt_id = clean_str(payload.get("selected_mt_id"))
+    if selected_spbu_id and not db.get(MasterSPBU, selected_spbu_id):
+        raise HTTPException(status_code=400, detail="Selected SPBU is invalid.")
+    if selected_mt_id and not db.get(MasterMT, selected_mt_id):
+        raise HTTPException(status_code=400, detail="Selected MT is invalid.")
+
+    existing = db.scalar(
+        select(AffinityAnalysisConfig).where(
+            AffinityAnalysisConfig.depot_id == depot_id,
+            AffinityAnalysisConfig.normalized_name == normalized_name,
+        )
+    )
+    config = existing or AffinityAnalysisConfig(
+        id=make_id("affinity_cfg", depot_id, normalized_name, datetime.now(timezone.utc).isoformat()),
+        name=name,
+        normalized_name=normalized_name,
+        depot_id=depot_id,
+    )
+    config.name = name
+    config.start_date = start_date
+    config.end_date = end_date
+    config.product_id = product_id
+    config.minimum_observations = max(1, int(payload.get("minimum_observations") or filters.get("minimum_observations") or 1))
+    config.confidence_filter = (clean_str(payload.get("confidence")) or clean_str(filters.get("confidence")) or "ALL").upper()
+    config.temporal_bucket = (clean_str(payload.get("temporal_bucket")) or clean_str(filters.get("temporal_bucket_requested")) or "WEEKLY").upper()
+    config.recent_days = max(1, min(365, int(payload.get("recent_days") or filters.get("recent_days") or 7)))
+    raw_top_n = payload.get("top_n") if payload.get("top_n") is not None else filters.get("top_n")
+    config.top_n = 0 if str(raw_top_n).upper() == "ALL" else max(0, min(100, int(raw_top_n or 5)))
+    config.edge_metric = (clean_str(payload.get("edge_metric")) or clean_str(filters.get("edge_metric")) or "SHIPMENT_COUNT").upper()
+    config.selected_spbu_id = selected_spbu_id
+    config.selected_mt_id = selected_mt_id
+    config.ui_state = payload.get("ui_state") or {}
+    config.affinity_analysis_snapshot = snapshot
+    config.updated_at = datetime.now(timezone.utc)
+    db.add(config)
+    db.commit()
+    db.refresh(config)
+    depot = db.get(MasterDepot, depot_id)
+    return serialize_saved_affinity_analysis_config(
+        config,
+        depot.depot_name if depot else None,
+        product.product_name if product else "All Products",
+        include_snapshot=True,
+    )
+
+
+def delete_saved_affinity_analysis_config(db: Session, config_id: str) -> dict:
+    config = db.get(AffinityAnalysisConfig, config_id)
+    if not config:
+        raise HTTPException(status_code=404, detail="Saved affinity analysis configuration not found.")
+    db.delete(config)
+    db.commit()
+    return {"status": "DELETED", "id": config_id}
+
+
+def parse_affinity_config_date(value: object, field_name: str) -> date:
+    if isinstance(value, date):
+        return value
+    if not value:
+        raise HTTPException(status_code=400, detail=f"{field_name} is required.")
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"{field_name} must be YYYY-MM-DD.") from exc
+
+
+def serialize_saved_affinity_analysis_config(
+    config: AffinityAnalysisConfig,
+    depot_name: str | None,
+    product_name: str | None,
+    include_snapshot: bool,
+) -> dict:
+    summary = (config.affinity_analysis_snapshot or {}).get("summary") or {}
+    row = {
+        "id": config.id,
+        "name": config.name,
+        "depot_id": config.depot_id,
+        "depot_name": depot_name,
+        "start_date": config.start_date.isoformat(),
+        "end_date": config.end_date.isoformat(),
+        "product_id": config.product_id,
+        "product_name": product_name or "All Products",
+        "minimum_observations": config.minimum_observations,
+        "confidence": config.confidence_filter,
+        "temporal_bucket": config.temporal_bucket,
+        "recent_days": config.recent_days,
+        "top_n": config.top_n,
+        "edge_metric": config.edge_metric,
+        "selected_spbu_id": config.selected_spbu_id,
+        "selected_mt_id": config.selected_mt_id,
+        "spbu_analyzed": summary.get("spbu_analyzed", 0),
+        "mt_observed": summary.get("mt_observed", 0),
+        "created_by": config.created_by,
+        "created_at": config.created_at.isoformat() if config.created_at else None,
+        "updated_at": config.updated_at.isoformat() if config.updated_at else None,
+    }
+    if include_snapshot:
+        row.update({"ui_state": config.ui_state or {}, "affinity_analysis_snapshot": config.affinity_analysis_snapshot or {}})
+    return row
 
 
 def ratio(numerator: int | float, denominator: int | float) -> float:
@@ -231,6 +408,7 @@ def build_affinity_intelligence_payload(
     observations = prepared["observations"]
     spbu_lookup = prepared["spbu_lookup"]
     mt_lookup = prepared["mt_lookup"]
+    _enrich_entity_tags(db, spbu_lookup, mt_lookup)
 
     profile_data = _build_profiles(observations, spbu_lookup, mt_lookup, start_date, end_date, bucket, recent_days)
     all_profiles = profile_data["profiles"]
@@ -284,6 +462,7 @@ def build_affinity_intelligence_payload(
                 "spbu_id": row["spbu_id"],
                 "spbu_code": row["spbu_code"],
                 "spbu_name": row.get("spbu_name"),
+                "spbu_tags": row.get("spbu_tags", []),
                 "value": [row["unique_mt_count"], row["consistency_score"], row["shipment_count"]],
                 **{key: row[key] for key in ["shipment_count", "dominant_mt_label", "dominant_mt_probability", "consistency_score", "variability_score", "temporal_stability_score", "confidence_level"]},
             }
@@ -365,12 +544,13 @@ def _prepare_observations(source_shipments: list[FactShipment], raw_rows: list[t
             "spbu_id": spbu_id,
             "mt_id": shipment.mt_id,
         }
-        spbu_lookup[spbu_id] = {"spbu_id": spbu_id, "spbu_code": spbu.spbu_code, "spbu_name": spbu.spbu_name}
+        spbu_lookup[spbu_id] = {"spbu_id": spbu_id, "spbu_code": spbu.spbu_code, "spbu_name": spbu.spbu_name, "spbu_tags": []}
         mt_lookup[shipment.mt_id] = {
             "mt_id": shipment.mt_id,
             "vehicle_registration": mt.vehicle_registration,
             "vehicle_name": mt.vehicle_name_raw,
             "mt_label": mt.vehicle_registration or mt.vehicle_name_raw or shipment.mt_id,
+            "mt_tags": [],
         }
     observations = list(observations_by_key.values())
     source_ids = {shipment.shipment_id for shipment in source_shipments if shipment.shipment_id}
@@ -397,6 +577,32 @@ def _prepare_observations(source_shipments: list[FactShipment], raw_rows: list[t
             "exclusion_reasons": reasons,
         },
     }
+
+
+def _enrich_entity_tags(db: Session, spbu_lookup: dict[str, dict], mt_lookup: dict[str, dict]) -> None:
+    spbu_ids = list(spbu_lookup)
+    if spbu_ids:
+        rows = db.execute(
+            select(BridgeSPBUTag.spbu_id, MasterTag.tag_value)
+            .join(MasterTag, MasterTag.tag_id == BridgeSPBUTag.tag_id)
+            .where(BridgeSPBUTag.spbu_id.in_(spbu_ids), MasterTag.active_status != "DELETED")
+            .order_by(BridgeSPBUTag.spbu_id, MasterTag.tag_value)
+        ).all()
+        for spbu_id, tag_value in rows:
+            if spbu_id in spbu_lookup and tag_value and tag_value not in spbu_lookup[spbu_id]["spbu_tags"]:
+                spbu_lookup[spbu_id]["spbu_tags"].append(tag_value)
+
+    mt_ids = list(mt_lookup)
+    if mt_ids:
+        rows = db.execute(
+            select(BridgeMTTag.mt_id, MasterTag.tag_value)
+            .join(MasterTag, MasterTag.tag_id == BridgeMTTag.tag_id)
+            .where(BridgeMTTag.mt_id.in_(mt_ids), MasterTag.active_status != "DELETED")
+            .order_by(BridgeMTTag.mt_id, MasterTag.tag_value)
+        ).all()
+        for mt_id, tag_value in rows:
+            if mt_id in mt_lookup and tag_value and tag_value not in mt_lookup[mt_id]["mt_tags"]:
+                mt_lookup[mt_id]["mt_tags"].append(tag_value)
 
 
 def _build_profiles(observations: list[dict], spbu_lookup: dict, mt_lookup: dict, start_date: date, end_date: date, bucket: str, recent_days: int) -> dict:
@@ -557,7 +763,7 @@ def _build_pattern_matrix(profiles: list[dict]) -> dict:
         high_unique = row["unique_mt_count"] > median_unique
         high_affinity = row["dominant_mt_probability"] >= 0.60
         quadrant = "PREFERRED-FLEET" if high_unique and high_affinity else "DEDICATED-LIKE" if high_affinity else "HIGHLY FLEXIBLE" if high_unique else "LIMITED BALANCED"
-        points.append({"spbu_id": row["spbu_id"], "spbu_code": row["spbu_code"], "value": [row["unique_mt_count"], row["dominant_mt_probability"]], "quadrant": quadrant, "shipment_count": row["shipment_count"]})
+        points.append({"spbu_id": row["spbu_id"], "spbu_code": row["spbu_code"], "spbu_tags": row.get("spbu_tags", []), "value": [row["unique_mt_count"], row["dominant_mt_probability"]], "quadrant": quadrant, "shipment_count": row["shipment_count"]})
     return {"unique_mt_split": median_unique, "affinity_split": 0.60, "points": points}
 
 
@@ -626,10 +832,10 @@ def _build_network(pair_rows: list[dict], profiles: list[dict], spbu_lookup: dic
     mt_ids = {row["mt_id"] for row in sorted_edges}
     profile_lookup = {row["spbu_id"]: row for row in profiles}
     nodes = [
-        {"id": f"spbu:{spbu_id}", "entity_id": spbu_id, "entity_type": "SPBU", "name": spbu_lookup[spbu_id]["spbu_code"], "category": 0, "symbolSize": 18 + min(24, math.sqrt(profile_lookup[spbu_id]["shipment_count"]) * 2), "selected": spbu_id == selected_spbu_id}
+        {"id": f"spbu:{spbu_id}", "entity_id": spbu_id, "entity_type": "SPBU", "name": spbu_lookup[spbu_id]["spbu_code"], "tags": spbu_lookup[spbu_id].get("spbu_tags", []), "category": 0, "symbolSize": 18 + min(24, math.sqrt(profile_lookup[spbu_id]["shipment_count"]) * 2), "selected": spbu_id == selected_spbu_id}
         for spbu_id in spbu_ids
     ] + [
-        {"id": f"mt:{mt_id}", "entity_id": mt_id, "entity_type": "MT", "name": mt_lookup[mt_id]["mt_label"], "category": 1, "symbolSize": 20, "selected": mt_id == selected_mt_id}
+        {"id": f"mt:{mt_id}", "entity_id": mt_id, "entity_type": "MT", "name": mt_lookup[mt_id]["mt_label"], "tags": mt_lookup[mt_id].get("mt_tags", []), "category": 1, "symbolSize": 20, "selected": mt_id == selected_mt_id}
         for mt_id in mt_ids
     ]
     metric = edge_metric.upper()
@@ -639,6 +845,8 @@ def _build_network(pair_rows: list[dict], profiles: list[dict], spbu_lookup: dic
             "target": f"mt:{row['mt_id']}",
             "value": row["probability_mt_given_spbu"] if metric == "AFFINITY_PROBABILITY" else row["shipment_count"],
             **{key: row[key] for key in ["spbu_id", "spbu_code", "mt_id", "mt_label", "shipment_count", "probability_mt_given_spbu", "probability_spbu_given_mt", "first_observed", "last_observed", "operating_day_count", "confidence_level"]},
+            "spbu_tags": row.get("spbu_tags", []),
+            "mt_tags": row.get("mt_tags", []),
             "highlighted": row["spbu_id"] == selected_spbu_id or row["mt_id"] == selected_mt_id,
         }
         for row in sorted_edges

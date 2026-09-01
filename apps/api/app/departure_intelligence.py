@@ -6,10 +6,11 @@ from datetime import date, datetime, timezone
 from math import floor
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
-from .models import FactGPSEvent, FactLoadingOrderLine, FactShipment, FactShipmentSPBU, MasterDepot, MasterMT, MasterSPBU
+from .models import BridgeSPBUTag, DepartureShiftAnalysisConfig, FactGPSEvent, FactLoadingOrderLine, FactShipment, FactShipmentSPBU, MasterDepot, MasterMT, MasterSPBU, MasterTag
+from .normalization import clean_str, make_id, normalize_key
 
 
 ALGORITHM_VERSION = "departure_profile.circular_gap_v1"
@@ -37,6 +38,152 @@ SHIFT_STATUS_THRESHOLDS = {
 }
 
 
+def list_saved_shift_analysis_configs(db: Session, depot_id: str | None = None, limit: int = 10, offset: int = 0) -> dict:
+    filters = []
+    if depot_id:
+        filters.append(DepartureShiftAnalysisConfig.depot_id == depot_id)
+    total = db.scalar(select(func.count()).select_from(DepartureShiftAnalysisConfig).where(*filters)) or 0
+    rows = db.scalars(
+        select(DepartureShiftAnalysisConfig)
+        .where(*filters)
+        .order_by(desc(DepartureShiftAnalysisConfig.updated_at), desc(DepartureShiftAnalysisConfig.created_at))
+        .limit(max(1, min(limit, 100)))
+        .offset(max(0, offset))
+    ).all()
+    depot_ids = sorted({row.depot_id for row in rows})
+    depot_names = {
+        depot.depot_id: depot.depot_name
+        for depot in db.scalars(select(MasterDepot).where(MasterDepot.depot_id.in_(depot_ids))).all()
+    } if depot_ids else {}
+    return {
+        "total": total,
+        "limit": max(1, min(limit, 100)),
+        "offset": max(0, offset),
+        "rows": [serialize_saved_shift_analysis_config(row, depot_names.get(row.depot_id), include_snapshots=False) for row in rows],
+    }
+
+
+def get_saved_shift_analysis_config(db: Session, config_id: str) -> dict:
+    config = db.get(DepartureShiftAnalysisConfig, config_id)
+    if not config:
+        raise HTTPException(status_code=404, detail="Saved shift analysis configuration not found.")
+    depot = db.get(MasterDepot, config.depot_id)
+    return serialize_saved_shift_analysis_config(config, depot.depot_name if depot else None, include_snapshots=True)
+
+
+def save_shift_analysis_config(db: Session, payload: dict) -> dict:
+    name = clean_str(payload.get("name"))
+    if not name:
+        raise HTTPException(status_code=400, detail="Configuration name is required.")
+    normalized_name = normalize_key(name)
+    if not normalized_name:
+        raise HTTPException(status_code=400, detail="Configuration name is invalid.")
+
+    departure_snapshot = payload.get("departure_analysis_snapshot") or {}
+    shift_snapshot = payload.get("shift_analysis_snapshot") or {}
+    if not departure_snapshot or not shift_snapshot:
+        raise HTTPException(status_code=400, detail="Departure analysis and shift analysis snapshots are required.")
+
+    filters = shift_snapshot.get("effective_filters") or departure_snapshot.get("effective_filters") or {}
+    depot_id = clean_str(payload.get("depot_id")) or clean_str(filters.get("depot_id"))
+    if not depot_id or not db.get(MasterDepot, depot_id):
+        raise HTTPException(status_code=400, detail="A valid depot is required.")
+
+    start_date = parse_date_from_payload(payload.get("start_date") or filters.get("start_date"), "start_date")
+    end_date = parse_date_from_payload(payload.get("end_date") or filters.get("end_date"), "end_date")
+    bucket_minutes = int(payload.get("bucket_minutes") or filters.get("bucket_minutes") or 30)
+    assignment_method = clean_str(payload.get("assignment_method")) or clean_str(shift_snapshot.get("assignment_method"))
+    if not assignment_method:
+        raise HTTPException(status_code=400, detail="Assignment method is required.")
+
+    existing = db.scalar(
+        select(DepartureShiftAnalysisConfig).where(
+            DepartureShiftAnalysisConfig.depot_id == depot_id,
+            DepartureShiftAnalysisConfig.normalized_name == normalized_name,
+        )
+    )
+    config = existing or DepartureShiftAnalysisConfig(
+        id=make_id("dep_shift_cfg", depot_id, normalized_name, utc_now_label()),
+        name=name,
+        normalized_name=normalized_name,
+        depot_id=depot_id,
+    )
+    config.name = name
+    config.start_date = start_date
+    config.end_date = end_date
+    config.bucket_minutes = bucket_minutes
+    config.search = clean_str(payload.get("search")) or clean_str(filters.get("search"))
+    config.sort_column = clean_str(payload.get("sort_column")) or clean_str(filters.get("sort_column")) or "observation_count"
+    config.sort_direction = clean_str(payload.get("sort_direction")) or clean_str(filters.get("sort_direction")) or "desc"
+    config.assignment_method = assignment_method
+    config.shift_config = payload.get("shift_config") or shift_snapshot.get("shift_config") or []
+    config.ui_state = payload.get("ui_state") or {}
+    config.departure_analysis_snapshot = departure_snapshot
+    config.shift_analysis_snapshot = shift_snapshot
+    config.updated_at = datetime.now(timezone.utc)
+    db.add(config)
+    db.commit()
+    db.refresh(config)
+    depot = db.get(MasterDepot, depot_id)
+    return serialize_saved_shift_analysis_config(config, depot.depot_name if depot else None, include_snapshots=True)
+
+
+def delete_saved_shift_analysis_config(db: Session, config_id: str) -> dict:
+    config = db.get(DepartureShiftAnalysisConfig, config_id)
+    if not config:
+        raise HTTPException(status_code=404, detail="Saved shift analysis configuration not found.")
+    db.delete(config)
+    db.commit()
+    return {"status": "DELETED", "id": config_id}
+
+
+def parse_date_from_payload(value: object, field_name: str) -> date:
+    if isinstance(value, date):
+        return value
+    if not value:
+        raise HTTPException(status_code=400, detail=f"{field_name} is required.")
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"{field_name} must be YYYY-MM-DD.") from exc
+
+
+def serialize_saved_shift_analysis_config(config: DepartureShiftAnalysisConfig, depot_name: str | None, include_snapshots: bool) -> dict:
+    departure_summary = (config.departure_analysis_snapshot or {}).get("summary") or {}
+    shift_summary = (config.shift_analysis_snapshot or {}).get("summary") or {}
+    row = {
+        "id": config.id,
+        "name": config.name,
+        "depot_id": config.depot_id,
+        "depot_name": depot_name,
+        "start_date": config.start_date.isoformat(),
+        "end_date": config.end_date.isoformat(),
+        "bucket_minutes": config.bucket_minutes,
+        "search": config.search or "",
+        "sort_column": config.sort_column,
+        "sort_direction": config.sort_direction,
+        "assignment_method": config.assignment_method,
+        "assignment_method_label": shift_assignment_label(config.assignment_method),
+        "shift_count": len(config.shift_config or []),
+        "profile_count": departure_summary.get("profile_count", 0),
+        "observation_count": departure_summary.get("observation_count", 0),
+        "assigned_profile_count": shift_summary.get("profile_count", 0),
+        "created_by": config.created_by,
+        "created_at": config.created_at.isoformat() if config.created_at else None,
+        "updated_at": config.updated_at.isoformat() if config.updated_at else None,
+    }
+    if include_snapshots:
+        row.update(
+            {
+                "shift_config": config.shift_config or [],
+                "ui_state": config.ui_state or {},
+                "departure_analysis_snapshot": config.departure_analysis_snapshot or {},
+                "shift_analysis_snapshot": config.shift_analysis_snapshot or {},
+            }
+        )
+    return row
+
+
 def build_departure_intelligence_payload(
     db: Session,
     depot_id: str,
@@ -50,6 +197,7 @@ def build_departure_intelligence_payload(
     sort_direction: str = "desc",
     confidence_level: str | None = None,
     spbu_ids: list[str] | None = None,
+    profile_search: str | None = None,
 ) -> dict:
     if bucket_minutes not in {30, 60}:
         raise HTTPException(status_code=400, detail="bucket_minutes must be 30 or 60.")
@@ -65,8 +213,10 @@ def build_departure_intelligence_payload(
     observations = build_observations(raw_rows, gps_lookup, quantity_lookup)
     valid_observations = [row for row in observations if row["departure_datetime_used"]]
 
-    all_profiles = sort_profiles(build_profiles(valid_observations, bucket_minutes), sort_column, sort_direction)
-    profiles = filter_departure_profiles(all_profiles, confidence_level, spbu_ids)
+    all_profiles = build_profiles(valid_observations, bucket_minutes)
+    attach_spbu_tags(db, all_profiles)
+    all_profiles = sort_profiles(all_profiles, sort_column, sort_direction)
+    profiles = filter_departure_profiles(all_profiles, confidence_level, spbu_ids, profile_search)
     total = len(profiles)
     visible_profiles = profiles[offset : offset + limit]
 
@@ -85,6 +235,7 @@ def build_departure_intelligence_payload(
             "sort_direction": "desc" if sort_direction == "desc" else "asc",
             "confidence_level": confidence_level or "ALL",
             "spbu_ids": spbu_ids or [],
+            "profile_search": profile_search or "",
         },
         "summary": build_summary(observations, valid_observations, all_profiles),
         "distribution": build_distribution(valid_observations, bucket_minutes),
@@ -448,7 +599,29 @@ def sort_profiles(profiles: list[dict], sort_column: str, sort_direction: str) -
     return sorted(profiles, key=lambda item: (key_fn(item), item.get("spbu_code") or item.get("spbu_id") or ""), reverse=reverse)
 
 
-def filter_departure_profiles(profiles: list[dict], confidence_level: str | None, spbu_ids: list[str] | None) -> list[dict]:
+def attach_spbu_tags(db: Session, profiles: list[dict]) -> None:
+    spbu_ids = sorted({profile["spbu_id"] for profile in profiles})
+    if not spbu_ids:
+        return
+    rows = db.execute(
+        select(BridgeSPBUTag.spbu_id, MasterTag.tag_value)
+        .join(MasterTag, MasterTag.tag_id == BridgeSPBUTag.tag_id)
+        .where(BridgeSPBUTag.spbu_id.in_(spbu_ids), MasterTag.active_status != "DELETED")
+        .order_by(BridgeSPBUTag.spbu_id, MasterTag.tag_value)
+    ).all()
+    tags_by_spbu: dict[str, list[str]] = defaultdict(list)
+    seen: set[tuple[str, str]] = set()
+    for spbu_id, tag_value in rows:
+        key = (spbu_id, tag_value)
+        if key in seen:
+            continue
+        seen.add(key)
+        tags_by_spbu[spbu_id].append(tag_value)
+    for profile in profiles:
+        profile["spbu_tags"] = tags_by_spbu.get(profile["spbu_id"], [])
+
+
+def filter_departure_profiles(profiles: list[dict], confidence_level: str | None, spbu_ids: list[str] | None, profile_search: str | None = None) -> list[dict]:
     filtered = profiles
     if confidence_level and confidence_level.upper() in {"HIGH", "MEDIUM", "LOW"}:
         target_level = confidence_level.upper()
@@ -456,6 +629,15 @@ def filter_departure_profiles(profiles: list[dict], confidence_level: str | None
     if spbu_ids is not None:
         allowed_spbu_ids = {spbu_id for spbu_id in spbu_ids if spbu_id}
         filtered = [profile for profile in filtered if profile.get("spbu_id") in allowed_spbu_ids]
+    if profile_search and profile_search.strip():
+        query = profile_search.strip().lower()
+        filtered = [
+            profile
+            for profile in filtered
+            if query in (profile.get("spbu_code") or "").lower()
+            or query in (profile.get("spbu_name") or "").lower()
+            or any(query in str(tag).lower() for tag in profile.get("spbu_tags", []))
+        ]
     return filtered
 
 

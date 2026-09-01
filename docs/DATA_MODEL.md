@@ -64,3 +64,33 @@ Phase 6 prediction persistence:
 - `prediction_assignment`: original and final vehicle/score, assigned/unassigned/manual status, unassigned reason, and override user/reason/time.
 
 Frequently filtered run/model/depot/shift/shipment/vehicle/SPBU/time fields are indexed. Run children cascade on run deletion, but the model foreign key is intentionally restrictive so an audited prediction cannot silently lose model lineage. The original prediction snapshot remains immutable while current shipment and final assignment rows support dispatcher overrides.
+
+Phase 7 operational optimization persistence:
+
+- `optimization_job`: one depot, operating date, immutable source Prediction Run reference, lifecycle, current route-version pointer, and depot operating-hours snapshot.
+- `optimization_run`: every initial/reroute solver attempt, state/parameter snapshot references, timing, status, objective, iteration metadata, and durable failure details.
+- `operational_state_snapshot`: exact LO, MT, bay, queue, and dispatcher-event input used by one optimization.
+- `optimization_parameter_profile`, `optimization_parameter_value`, `optimization_vehicle_cost_rule`: versioned reusable settings; saving an existing profile appends a new version.
+- `optimization_parameter_snapshot`: immutable effective parameter JSON plus SHA-256 checksum used for reproducibility.
+- `lo_operational_state`: immutable Phase 6 warm-start columns alongside separate current Phase 7 vehicle/shipment/trip/compartment/gate-out and execution status columns.
+- `vehicle_operational_state`, `actual_vehicle_event`: initial planned, prior system, user override, effective ETA precedence, working time, and operational audit.
+- `route_version`: append-only V1/V2/... result header with snapshots, cost, comparison, solver outcome, and dispatch-span KPI.
+- `route_version_trip`, `route_version_stop`, `route_version_lo_assignment`, `route_version_vehicle_assignment`: physical-MT multi-trip timeline, stop evidence, compartment-level LO placement, explicit dropped reasons, and fleet utilization.
+- `master_loading_bay`, `loading_bay_product_compatibility`, `product_compartment_loading_duration`: depot bay master, hard product eligibility, and per-product/per-compartment duration.
+- `actual_bay_state`, `optimization_initial_queue`: actual occupancy and ordered physical queue that override previous prediction.
+- `optimization_bay_assignment`, `optimization_bay_operation`: CP-SAT queue/loading/gate-out result and compartment operations for each versioned trip.
+- `route_matrix_cache`, `route_api_request_log`: departure-bucket travel data, provider/fallback metadata, expiry, pair counts, cache hits, request duration, and audit outcome.
+
+Route versions are never updated in place. Reroute copies frozen execution units and writes re-optimized future work into a new version. `optimization_job.current_route_version_id` is the only mutable pointer to the latest operational plan; older versions and their snapshots remain queryable.
+
+Phase 8 manual dispatch persistence:
+
+- `manual_dispatch_job`: domain/public job ID, depot/date, source Phase 6/7 lineage, source job/run/route/version metadata, dispatch version and parent, lifecycle, optimistic `row_version`, configuration snapshot, creator/updater, and finalization actor/time.
+- `manual_dispatch_vehicle`: one MT snapshot per dispatch job with registration, class, capacity KL, tags, compartments, initial/last availability, and dispatch status.
+- `manual_dispatch_loading_order`: complete planning-scope LO snapshot, including SPBU/product/volume, saved cluster/shift/tags, source evidence, and explicit `ASSIGNED`/`UNASSIGNED` state.
+- `manual_dispatch_trip`: ordered physical-MT trip with before/departure/return/after timestamps, turnaround/buffer, distance, travel/service/total duration, KL total, route status/error/provider/geometry, and optimistic `row_version`.
+- `manual_dispatch_trip_lo`: relational assignment from one in-scope LO to one trip, with stop sequence and calculated SPBU arrival timestamp. A database uniqueness constraint prevents one LO scope from being assigned to two trips.
+- `manual_dispatch_route_leg`: auditable Depot/SPBU edge with coordinates, distance, static/traffic duration, provider, request timestamp, and response status.
+- `manual_dispatch_audit_log`: append-only actor/action/entity record with previous/new JSON and movement/timeline metadata.
+
+`0022_phase8_manual_dispatch` adds these tables without changing Phase 6/7 source tables. Creating a Phase 8 job or version performs a deep relational copy. Finalized rows remain immutable; further editing starts a child dispatch version rather than overwriting the finalized snapshot.

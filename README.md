@@ -1,10 +1,10 @@
 # Dispatch Intelligence Platform
 
-Dispatch Intelligence Platform adalah aplikasi analitik operasional distribusi BBM. Platform ini dibangun bertahap dari Phase 0 sampai Phase 6 untuk mengubah:
+Dispatch Intelligence Platform adalah aplikasi intelligence dan operational control distribusi BBM. Platform ini dibangun bertahap dari Phase 0 sampai Phase 9 untuk mengubah:
 
 Master Data + Loading Order + GPS Operational Data + Historical Dispatch
 
-menjadi trusted operational intelligence yang nanti dapat menjadi input untuk optimasi rute. Phase 6 memakai Google Maps Routes API hanya untuk estimasi waktu perjalanan/cycle time; optimasi rute fleet-wide tetap belum menjadi scope Phase 0-6.
+menjadi trusted operational intelligence, saved prediction, dynamic multi-trip route plan, final human-reviewed dispatch, dan evaluasi keselarasan historis yang auditable. Phase 6 menghasilkan warm start shipment/MT; Phase 7 memakai Google OR-Tools untuk optimasi fleet-wide dan depot bay scheduling; Phase 8 membuat snapshot untuk adjustment manual, per-trip recalculation, simulation, dashboard, audit, dan finalization; Phase 9 mengukur empat kategori alignment secara deskriptif tanpa menilai route baik atau buruk. Google Routes API tetap hanya menjadi provider jarak, waktu, matrix, dan geometry—bukan optimization engine.
 
 Prinsip utama: jangan lanjut ke phase berikutnya sebelum phase berjalan benar, diuji, tervalidasi visual, terdokumentasi, dan usable.
 
@@ -41,6 +41,9 @@ WEB_PORT=3001 docker compose up -d web
 - Phase 4 - SPBU–MT Historical Affinity & Stability Intelligence: `/affinity-intelligence`
 - Phase 5 - Machine Learning Intelligence: `/machine-learning-intelligence`
 - Phase 6 - Shipment & MT Assignment Prediction: `/prediction-assignment`
+- Phase 7 - Dynamic Multi-Trip VRP & Depot Bay Queue: `/phase7-optimization`
+- Phase 8 - Manual Dispatching & Operational Simulation: `/phase-8/manual-dispatch`
+- Phase 9 - Route–Model Alignment Evaluation: `/phase9/route-model-alignment`
 - Settings - Google Maps Integration: `/settings/google-maps-integration`
 - Documentation - Panduan Pengguna: `/documentation`
 
@@ -141,6 +144,8 @@ Halaman Phase 4 mengukur historical vehicle-assignment behavior:
 
 Card paling atas menentukan scope analisis. Perubahan filter belum mengubah hasil sampai tombol **Apply** ditekan.
 
+Tombol **Save** menyimpan filter yang sudah di-Apply, SPBU–MT detail aktif, viewport grafik, serta snapshot hasil analisis ke backend. Tombol **Load** memulihkan snapshot tersebut tanpa menghitung ulang, sehingga hasil yang dibuka tetap merepresentasikan kondisi saat konfigurasi disimpan. Nama yang sama dalam depot yang sama memperbarui konfigurasi tersimpan; tabel **Saved SPBU–MT Affinity Analysis Configurations** menyediakan pagination dan penghapusan konfigurasi.
+
 | Filter | Fungsi | Cara membaca atau menggunakan |
 |---|---|---|
 | Depot | Membatasi shipment, SPBU, dan MT pada satu depot. | Data antardepot tidak dicampur. Depot wajib dipilih. |
@@ -208,6 +213,7 @@ Card ini menjelaskan SPBU yang sedang dipilih. SPBU dapat dipilih melalui Search
 | Sub-card / metric | Arti | Cara membaca |
 |---|---|---|
 | SPBU | Kode SPBU aktif. | Semua affinity chart, temporal chart, recent comparison, dan evidence mengacu pada SPBU ini. |
+| SPBU Tag | Daftar tag master yang terhubung ke SPBU aktif. | Tanda `-` berarti SPBU tidak mempunyai tag aktif pada master data. |
 | Historical Shipments | Distinct shipment yang melayani SPBU pada scope aktif. | Ini denominator `P(MT|SPBU)`. |
 | Operating Days | Jumlah tanggal operasi unik yang mempunyai evidence. | Dua SPBU dengan shipment count sama dapat mempunyai temporal evidence berbeda jika operating days berbeda. |
 | Unique MT Used | Jumlah MT berbeda yang pernah melayani SPBU. | Baca bersama probability distribution, consistency, variability, dan confidence; jangan digunakan sendirian. |
@@ -254,7 +260,7 @@ Horizontal bar chart ini menampilkan historical MT distribution untuk SPBU aktif
 - Sumbu X berisi `P(MT|SPBU)` dalam persen.
 - Bar pertama berwarna lime untuk menandai dominant historical MT; bar lain berwarna biru.
 - Panjang bar menunjukkan seberapa sering MT tersebut digunakan relatif terhadap seluruh shipment SPBU.
-- Hover menampilkan MT, shipment count, probability, first observed, dan last observed.
+- Hover menampilkan MT, MT Tag, shipment count, probability, first observed, dan last observed.
 - Klik bar untuk memilih MT tersebut, memperbarui reverse detail dan evidence relationship.
 
 Contoh:
@@ -312,6 +318,13 @@ Satu shipment MT dapat melayani beberapa SPBU. Karena itu total `P(SPBU|MT)` sel
 
 Setiap titik mewakili satu SPBU.
 
+Kontrol navigasi di kanan atas chart:
+
+- ikon **kaca pembesar** memperbesar viewport secara bertahap; domain dan skala sumbu X/Y mengikuti kondisi zoom;
+- ikon **tangan** mengaktifkan pan; drag area plot untuk menggeser viewport pada kondisi zoom;
+- ikon **fit** mengembalikan viewport dan skala kedua sumbu ke posisi awal;
+- pada mode tangan, scroll mouse/trackpad pada area plot juga dapat memperbesar atau memperkecil viewport.
+
 - Sumbu X: **Unique MT Count**.
 - Sumbu Y: **Consistency Score**.
 - Ukuran titik: historical shipment count; titik besar mempunyai evidence shipment lebih banyak.
@@ -325,11 +338,13 @@ Cara membaca area plot:
 - Kiri bawah: sedikit MT dengan distribution lebih seimbang.
 - Kanan bawah: banyak MT dengan distribution tersebar; pola paling flexible.
 
-Hover menampilkan SPBU, shipment count, unique MT, dominant MT dan probability, consistency, variability, stability, serta confidence. Klik titik untuk membuka SPBU profile dan popup persisten berisi nama, kode, serta confidence SPBU. Titik terpilih diberi border gelap; popup dapat ditutup dengan tombol `×`.
+Hover menampilkan SPBU, SPBU Tag, shipment count, unique MT, dominant MT dan probability, consistency, variability, stability, serta confidence. Klik titik untuk membuka SPBU profile dan popup persisten berisi nama, kode, SPBU Tag, serta confidence SPBU. Titik terpilih diberi border gelap; popup dapat ditutup dengan tombol `×`.
 
 #### 6. Historical Pattern Matrix
 
 Matrix ini memberi operational overview berdasarkan dua dimensi:
+
+Matrix menyediakan kontrol kaca pembesar, tangan, dan fit yang sama dengan Scatter Plot. Zoom dan pan bekerja pada kedua sumbu, sedangkan fit mengembalikan domain `Unique MT` dan `Dominant Affinity` ke skala awal.
 
 - Sumbu X: Unique MT Count.
 - Sumbu Y: Dominant MT Affinity.
@@ -345,17 +360,31 @@ Empat quadrant dibaca sebagai berikut:
 | Kiri bawah | LIMITED BALANCED | Jumlah MT sedikit dan usage relatif terbagi. |
 | Kanan bawah | HIGHLY FLEXIBLE | Banyak MT dan dominant affinity rendah. |
 
-Warna titik mengikuti quadrant. Hover menampilkan SPBU, quadrant, unique MT, dominant affinity, dan shipment count. Klik titik untuk memilih SPBU.
+Warna titik mengikuti quadrant. Hover menampilkan SPBU, SPBU Tag, quadrant, unique MT, dominant affinity, dan shipment count. Klik titik untuk memilih SPBU.
 
 Matrix adalah ringkasan dua dimensi. Historical Pattern pada profile juga mempertimbangkan consistency dan Top-3 share, sehingga label detail dapat memberi konteks tambahan.
+
+Perbedaan utama kedua grafik:
+
+| Grafik | Pertanyaan yang dijawab | Distribution yang dipakai |
+|---|---|---|
+| SPBU Consistency Scatter Plot | Seberapa terkonsentrasi penggunaan MT pada setiap SPBU dibanding jumlah MT yang pernah digunakan? | Seluruh probability distribution MT melalui normalized HHI. |
+| Historical Pattern Matrix | Apakah SPBU lebih menyerupai dedicated, preferred-fleet, limited-balanced, atau highly-flexible? | Jumlah MT unik dan probability MT paling dominan. |
+
+Dua SPBU dapat berada pada quadrant Matrix yang sama tetapi mempunyai Consistency Score berbeda. Matrix hanya memakai dominant affinity dan jumlah MT unik, sedangkan Scatter Plot memperhitungkan pembagian shipment kepada seluruh MT.
 
 #### 7. Ranking cards
 
 Tiga ranking bukan recommendation list; semuanya ranking descriptive historical behavior.
 
-- **Most Historically Consistent SPBU** diurutkan berdasarkan Consistency Score. Kolom Unique MT dan Top-3 Share membantu membedakan concentration dengan ukuran fleet.
-- **Most Historically Variable SPBU** diurutkan berdasarkan Variability Score. Kolom Temporal Stability menunjukkan apakah variasi fleet tersebut tetap konsisten atau berubah antarperiode.
-- **Highest Historical Pattern Change** diurutkan dari Temporal Stability terendah. Pattern Shift serta Previous MT dan Recent MT menunjukkan arah perubahan dominant pattern.
+- **Most Historically Consistent SPBU** menjawab SPBU mana yang penggunaan MT-nya paling terkonsentrasi. Urutan dimulai dari Consistency Score tertinggi, lalu shipment terbanyak dan kode SPBU. Kolom Unique MT, Dominant %, dan Top-3 Share membantu membedakan concentration dengan ukuran fleet.
+- **Most Historically Variable SPBU** menjawab SPBU mana yang shipment-nya paling merata tersebar ke berbagai MT. Urutan dimulai dari Variability Score atau normalized entropy tertinggi, lalu shipment terbanyak dan kode SPBU. Variability tinggi tidak otomatis berarti pola sering berubah antarperiode.
+- **Highest Historical Pattern Change** menjawab SPBU mana yang distribusi MT-nya paling berubah antar-bucket waktu. Urutan dimulai dari Temporal Stability terendah, dilanjutkan Pattern Shift Distance terbesar dan shipment terbanyak. Previous MT, Recent MT, dan shift level menunjukkan arah serta besarnya perubahan dominant pattern.
+
+Contoh pembeda:
+
+- SPBU yang memakai banyak MT secara merata setiap minggu dapat mempunyai Variability tinggi tetapi Temporal Stability tetap tinggi karena pola pembagiannya konsisten.
+- SPBU yang hanya memakai dua MT dapat mempunyai Pattern Change tinggi apabila dominant MT berganti tajam antara periode sebelumnya dan periode terbaru.
 
 Klik nama/header kolom untuk mengubah sorting, gunakan Filter SPBU untuk menyaring ranking, dan klik row untuk membuka SPBU profile terkait. Selalu baca ranking bersama Shipment dan Confidence agar profile dengan evidence kecil tidak disamakan dengan profile ber-evidence kuat.
 
@@ -374,7 +403,8 @@ Cara membaca:
 - SPBU dengan banyak edge pernah dilayani oleh banyak MT.
 - MT dengan banyak edge mempunyai historical service footprint ke banyak SPBU.
 - Ketebalan edge menunjukkan historical shipment evidence. Pilihan Network Edge mengubah analytical edge value menjadi Shipment Count atau Affinity Probability, sedangkan tooltip tetap menampilkan kedua probability agar arah relationship dapat dibandingkan.
-- Hover edge menampilkan shipment count, `P(MT|SPBU)`, `P(SPBU|MT)`, first/last observed, operating days, dan confidence.
+- Hover node SPBU menampilkan SPBU Tag; hover node MT menampilkan MT Tag.
+- Hover edge menampilkan SPBU Tag, MT Tag, shipment count, `P(MT|SPBU)`, `P(SPBU|MT)`, first/last observed, operating days, dan confidence.
 - Klik node SPBU untuk highlight seluruh MT yang pernah melayaninya.
 - Klik node MT untuk membuka reverse service footprint MT tersebut.
 
@@ -420,7 +450,7 @@ Operational Shift Intelligence di Phase 2:
 
 Operational Shift Intelligence tetap berbasis perilaku historis. Output ini tidak memaksa jadwal dispatch masa depan dan tidak melakukan multi-feature SPBU clustering; advanced clustering tetap menjadi tanggung jawab fase lanjutan.
 
-Catatan scope saat ini: fondasi Phase 0 tetap menjadi dasar data utama, dan Phase 2 departure intelligence sudah tersedia sebagai read-only derived analysis. Analisa di luar scope seperti SPBU arrival, ETA, route intelligence, route optimization, dan recommendation workflow belum dikerjakan sebagai fitur aktif.
+Catatan scope: fondasi Phase 0 tetap menjadi dasar data utama dan Phase 2 tetap read-only historical intelligence. Prediction/availability Phase 6 dan dynamic route/bay optimization Phase 7 sudah tersedia sebagai modul terpisah; GPS-confirmed arrival/visit dan actual stop reconstruction tetap menunggu evidence GPS yang tervalidasi.
 
 Load sample data:
 
@@ -454,6 +484,7 @@ Implemented stack:
 - TypeScript
 - Tailwind CSS
 - Apache ECharts
+- Google OR-Tools Routing Solver dan CP-SAT
 - Docker Compose
 
 Monorepo layout:
@@ -467,6 +498,11 @@ Monorepo layout:
 Phase 2 departure intelligence details are documented in `docs/PHASE_2_DEPOT_DEPARTURE_INTELLIGENCE.md`.
 Phase 3 pairing intelligence implementation is summarized in `PHASE_3_COMPLETION_REPORT.md`.
 Phase 4 methodology is documented in `docs/PHASE_4_SPBU_MT_AFFINITY.md`, with implementation status in `PHASE_4_COMPLETION_REPORT.md`.
+Phase 7 architecture, workflow, hard/soft constraints, API, schema, dan operasi dispatcher didokumentasikan di `docs/PHASE_7_DYNAMIC_VRP.md`.
+
+Phase 8 snapshot boundary, MT–Trip–LO editing, eligibility, Apply, route legs, multi-trip availability, cascading recalculation, simulation KL/Gantt, daily dashboard, versioning, audit, dan finalization didokumentasikan di `docs/PHASE_8_MANUAL_DISPATCH.md`.
+
+Phase 9 Source-Aligned Bundle, empat metric alignment terpisah, evidence coverage, persistence, API, dashboard, tabel LO, dan aturan interpretasi netral didokumentasikan di `docs/PHASE_9_ROUTE_MODEL_ALIGNMENT.md`.
 
 ## Phase Roadmap
 
@@ -692,18 +728,35 @@ Engine A — Historical MT–SPBU Concentration Anomaly:
 Engine B — SPBU Behavioral Clustering:
 
 - memakai workflow `Prepare Dataset → Validate → Configure → Train → Review → Save`
+- menilai setiap SPBU aktif dengan deterministic **Data Sufficiency Score 0–100** dari shipment count, operating days, training-period coverage, shift coverage, pairing evidence, dan recency. Ambang default terpusat adalah `SUFFICIENT >= 80`, `MARGINAL >= 50`, dan `INSUFFICIENT < 50`; konfigurasi serta component weights disnapshot bersama model
+- hanya `SUFFICIENT` yang membentuk scaler, UMAP geometry, dan HDBSCAN core boundary. `SUFFICIENT` tidak otomatis menjadi anggota cluster karena HDBSCAN tetap boleh menghasilkan `CORE_NOISE`
+- `MARGINAL` tidak ikut fit. Sesudah core training, fitted UMAP mentransform marginal record dan implementasi `sklearn.cluster.HDBSCAN` memakai fallback terdokumentasi **nearest core centroid in UMAP space**. Hanya confidence di atas ambang yang menjadi `MARGINAL_PROJECTED`; sisanya `MARGINAL_UNASSIGNED`
+- `INSUFFICIENT` selalu `INSUFFICIENT_UNASSIGNED`: tidak mempunyai cluster ID, membership probability, atau UMAP marker. **INSUFFICIENT bukan noise**, dan **marginal projection bukan core membership**
 - tag features mempertahankan tag-type boundary melalui typed multi-hot encoding; Vehicle Class disimpan sebagai feature ordinal
 - shift feature memakai seluruh historical shift distribution dan menyimpan exact shift-definition snapshot pada training run/model
 - Phase 3 same-shipment relationship dibentuk sebagai weighted graph; edge weight adalah mean dari dua directional conditional probabilities
 - pairing graph diubah menjadi embedding dengan Node2Vec memakai seed dan single worker; isolated nodes menerima zero pairing vector, dan graph tanpa edge menghasilkan zero vector untuk seluruh node
-- feature group Tag, Shift, Pairing distandardisasi sendiri-sendiri, dikalikan `sqrt(weight / group_dimension)`, lalu digabung agar group lebar tidak dominan hanya karena memiliki lebih banyak kolom
+- Geographic Proximity adalah feature group keempat. Koordinat canonical Master SPBU divalidasi sebagai `VALID`, `MISSING`, atau `INVALID`; `(0,0)`, out-of-range, null, dan duplicate-coordinate condition ditangani eksplisit. Haversine membentuk nearest distance, average/median K-nearest distance, serta local density. Missing/invalid coordinate memakai median core-training feature plus missing indicator, bukan silent zero
+- feature group Tag, Shift, Pairing, dan Geographic distandardisasi sendiri-sendiri, dikalikan `sqrt(weight / group_dimension)`, lalu digabung. Default weight adalah **30% / 20% / 30% / 20%**; geography dapat dimatikan dengan weight 0 dan remaining weights tervalidasi berjumlah 1
 - pipeline utama adalah **Node2Vec + UMAP + HDBSCAN**. HDBSCAN noise tetap noise dan ditampilkan sebagai `Noise / Unique Behavioral Pattern`
-- dataset v4 mempertahankan seluruh SPBU master berstatus `ACTIVE`. HDBSCAN dan scaler tetap di-fit hanya memakai SPBU yang memenuhi minimum historical observation; SPBU aktif lainnya dipetakan sesudah training ke centroid cluster terdekat sebagai `ACTIVE_MASTER_COLD_START` dengan membership maksimum 0,49 agar coverage lengkap tanpa menyamakan cold-start dengan behavioral evidence
-- pairing graph, shift distribution, dan shipment observation selalu dibangun ulang dari histori canonical dalam training period yang dipilih; dataset summary memisahkan sufficient-history, cold-start, dan inactive historical SPBU. Artifact inference menyimpan seluruh internal pairing edge, sedangkan panel review tetap membatasi tampilannya pada Top 10 per cluster
+- pairing graph, shift distribution, geographic representation, dan shipment evidence selalu dibangun ulang dari canonical history/master snapshot pada training period. Pairing graph dapat membawa `MARGINAL` agar dapat ditransform, tetapi hanya `SUFFICIENT` yang menentukan cluster
 - training result harus direview sebelum diberi nama dan disimpan; training tidak otomatis membuat registry model atau mengaktifkannya
 - saved model untuk depot aktif dapat dipilih dan dibuka langsung dari workspace Behavioral Clustering tanpa prepare dataset atau retraining; UMAP, Geographic Cluster Map, profiles, dan paginated membership memakai assignment model yang tersimpan
 - saved package berisi encoder/configuration, scaler metadata, Node2Vec embeddings, internal/visualization UMAP model, HDBSCAN model, vectors, assignments, profiles, dependency versions, manifest, dan checksum
 - binary package berada pada persistent `ML_ARTIFACT_DIR`; relational table hanya menyimpan artifact metadata/path/checksum
+
+Arsitektur Engine B:
+
+```text
+MASTER COMPATIBILITY → 100% PASS → DATA SUFFICIENCY
+                                      ├─ SUFFICIENT → TAG + SHIFT + PAIRING + GEOGRAPHY → UMAP → HDBSCAN → CORE / CORE NOISE
+                                      ├─ MARGINAL ─────────────────────────────────────→ POST-TRAINING PROJECTION / UNASSIGNED
+                                      └─ INSUFFICIENT ──────────────────────────────────→ NOT ASSIGNED
+```
+
+> Geographic Proximity in Phase 5 is a clustering feature only.
+
+Geographic Proximity memakai koordinat SPBU dan Haversine. Ini bukan road distance, large-vehicle route feasibility, travel time, traffic, atau route optimization; kebutuhan tersebut tetap berada pada phase routing/optimization berikutnya.
 
 Model lifecycle:
 
@@ -711,7 +764,7 @@ Model lifecycle:
 - hanya satu model `ACTIVE` per depot; aktivasi menurunkan model aktif lama menjadi `SAVED`
 - retraining tidak overwrite version lama; nama yang sama pada depot yang sama menghasilkan `v1`, `v2`, dan seterusnya
 - Duplicate hanya menyalin configuration ke training draft baru, bukan trained artifact
-- Compare mengabaikan arbitrary HDBSCAN cluster IDs. Cluster antar-model dipasangkan secara optimal berdasarkan Jaccard similarity membership set menggunakan Hungarian assignment
+- Compare mengabaikan arbitrary HDBSCAN cluster IDs. Core cluster antar-model dipasangkan berdasarkan Jaccard/Hungarian, sedangkan perubahan kematangan data (`INSUFFICIENT → MARGINAL`, `MARGINAL → SUFFICIENT`, dan arah lain) dilaporkan terpisah
 - active-model API menyediakan version, period, assignments, membership probability, dan cluster profiles untuk phase berikutnya
 
 Local ML setup di luar Docker:
@@ -738,12 +791,14 @@ Detail teknis dan panduan operasional lengkap: `docs/PHASE_6_PREDICTION_ASSIGNME
 
 Input workbook:
 
-- Loading Order: `loading_order_no`, `shipment_start_datetime`, `spbu_no`, dan `order_quantity_kl`; setiap LO wajib tepat 8 KL
-- MT Availability: `vehicle_registration_no`, `initial_available_datetime`
-- template dapat diunduh dari page atau API; `.xlsx` dibatasi 10 MB
-- card **Loading Order Upload** menyediakan **Data Demo**: user memasukkan total order kelipatan 8 KL, sistem membuat satu LO 8 KL per unit order, lalu hanya memilih SPBU aktif non-noise dengan `history_eligible=true` dan `coverage_source=BEHAVIORAL_HISTORY` pada saved model yang dipilih. Dengan demikian SPBU cold-start, inactive, noise, dan unseen tidak masuk data demo. LO dibentuk sebagai batch cluster/dominant-shift bertimestamp berdekatan agar demo dapat menguji multi-SPBU; input dengan sisa di bawah 8 KL ditolak
-- card **MT Availability Upload** menyediakan **Data Demo**: user memasukkan target total kapasitas MT dalam KL, sistem memilih kombinasi acak MT aktif dari master depot dengan total kapasitas paling dekat ke target; jam buka depot mengikuti `start_time` shift pertama dan jam tutup mengikuti `end_time` shift terakhir pada snapshot model. Secara default semua MT tersedia tepat pada jam buka, sedangkan opsi **Random availability** membuat jam availability secara acak di dalam window buka–tutup tersebut
-- workbook demo langsung dipasang sebagai file upload aktif dan melewati validator yang sama dengan file manual; nama SPBU, kuantitas order, kapasitas MT terpilih, dan timestamp ikut dipertahankan untuk audit
+- Loading Order: `loading_order_no`, `shipment_start_datetime`, `spbu_no`, `product`, dan `order_quantity_kl`; setiap LO wajib tepat 8 KL. Nilai product dipetakan ke `master_product`/alias canonical dan disimpan pada snapshot line prediction
+- MT Availability internal: `vehicle_registration_no`, `initial_available_datetime`; user tidak lagi mengunggah workbook MT manual
+- template Loading Order dapat diunduh dari page atau API; `.xlsx` dibatasi 10 MB
+- card **Loading Order Upload** menyediakan **Data Demo**: user wajib memilih tanggal Loading Order dan memasukkan total order kelipatan 8 KL. Sistem membuat satu LO 8 KL per unit order pada tanggal pilihan, lalu hanya memilih SPBU aktif non-noise dengan `history_eligible=true` dan `coverage_source=BEHAVIORAL_HISTORY` pada saved model yang dipilih. Jam LO dibentuk dari shift snapshot model dalam batch cluster/dominant-shift bertimestamp berdekatan agar demo dapat menguji multi-SPBU. SPBU cold-start, inactive, noise, dan unseen tidak digunakan; input dengan sisa di bawah 8 KL ditolak
+- setelah file manual atau Data Demo LO tervalidasi, card **Loading Order Management** membuka seluruh row input—termasuk Product—untuk Add, Edit, dan Delete. Form Add/Edit memakai dropdown SPBU aktif dari Master SPBU pada depot terpilih dan dropdown Product aktif dari Master Product, bukan free text. Setiap header data memiliki filter dan sort, tabel dipaginasi, dan setiap perubahan membentuk ulang workbook aktif lalu menjalankan validator backend yang sama; hasil tabel inilah yang dikirim saat **Run Prediction**
+- card **MT Availability** hanya menyediakan **Import Data from Master Data**. Tombol ini mengambil seluruh MT canonical aktif pada depot terpilih dan membuka **MT Management** dengan kolom No MT, MT Tag Class, Status, dan ETA on Depot. Tidak tersedia Add/Delete; status Active/Deactive adalah state operasional run dan tidak menulis balik ke Master MT
+- seluruh MT hasil import mendapat ETA pada tanggal operasi dan jam awal Shift 1 dari snapshot model. MT dengan profil kapasitas 8 KL yang valid default Active; MT canonical aktif yang profil kapasitasnya tidak valid tetap ditampilkan tetapi default Deactive beserta alasannya. User dapat mengubah status atau ETA; hanya row Active yang dibentuk menjadi workbook internal, divalidasi backend, dan dikirim saat **Run Prediction**. ETA on Depot berarti waktu MT mulai available di depot
+- workbook internal hasil management langsung dipasang sebagai input aktif dan melewati validator yang sama; nomor MT, kapasitas, status operasional, dan timestamp ikut dipertahankan untuk audit
 - timestamp tanpa offset dibaca memakai timezone depot; normalized snapshot disimpan dalam UTC dan local time
 - shift bukan input utama: shift diturunkan dari `shipment_start_datetime` menggunakan exact full-day shift-definition snapshot model Phase 5/Phase 2
 - LO divalidasi terhadap planning horizon; MT harus unik, aktif, ada di master, dan berada pada depot run
@@ -778,9 +833,9 @@ Final Dispatch Prediction
 Phase 7 Input
 ```
 
-Shipment inference memakai immutable Phase 5 artifact/normalized model registry: cluster membership probability, same-cluster evidence, model feature weights, derived-shift match, dan saved historical pairing strength. Grouping hanya dipertimbangkan dalam derived shift yang sama dan dalam `maximum_pairing_time_gap_minutes`; default window adalah 90 menit dan tetap configurable dari UI. Default minimum pairing confidence adalah 0,40 agar sufficient-history pair dapat terbentuk tanpa otomatis meloloskan cold-start coverage yang confidence-nya sengaja dibatasi. `planned_start_datetime` adalah timestamp LO paling akhir dalam shipment. Algoritma `CAPACITY_TIME_ROUTE_SET_PACKING` membangun connected candidate group melalui binary MILP set packing (dengan deterministic greedy fallback), menggunakan group model score, time span, 8 KL compartment capacity, pair-evidence coverage, dan approximate route feasibility.
+Shipment inference memakai immutable Phase 5 artifact/normalized model registry: cluster membership probability, same-cluster evidence, model feature weights, derived-shift match, dan saved historical pairing strength. Grouping hanya dipertimbangkan dalam derived shift yang sama dan dalam `maximum_pairing_time_gap_minutes`; default window adalah 90 menit dan tetap configurable dari UI. Default minimum pairing confidence adalah 0,40 agar sufficient-history pair dapat terbentuk tanpa otomatis meloloskan cold-start coverage yang confidence-nya sengaja dibatasi. `planned_start_datetime` adalah timestamp LO paling akhir dalam shipment. Algoritma `CAPACITY_TIME_ROUTE_SET_PACKING` membangun connected candidate group melalui binary MILP set packing (dengan deterministic greedy fallback), menggunakan group model score, time span, 8 KL compartment capacity, pair-evidence coverage, approximate route feasibility, dan operational MT feasibility. Set-packing pada setiap tier hanya memilih grup dengan jumlah LO tepat 4/3/2 serta sedikitnya satu MT berkapasitas sama yang lulus intersection master tag seluruh SPBU dan rolling availability window; grup yang tidak dapat dijalankan tidak menghalangi kombinasi LO alternatif pada tier yang sama.
 
-Orkestrasi `phase6.iterative_exact_capacity_assignment.v9` menjalankan grouping dan MT assignment secara bertingkat: 32 KL/4 LO, 24 KL/3 LO, 16 KL/2 LO, lalu 8 KL/1 LO. Hanya grup yang berhasil mendapat status `ASSIGNED` atau `ASSIGNED_WITH_DELAY` yang mengonsumsi LO. Jika grup besar tidak memiliki MT berkapasitas sama yang available dan compatible, grup tersebut dibubarkan dan LO-nya diprediksi ulang pada tier berikutnya. Di setiap tier, multi-LO tetap wajib memenuhi evidence cluster/shift/time/rute Fase 5, sedangkan candidate MT wajib lulus vehicle type, project tag, depot, dan kapasitas untuk seluruh SPBU. Tidak ada partial-load fallback: shipment 32/24/16/8 KL masing-masing hanya dapat memakai MT 32/24/16/8 KL. Dengan demikian optimizer menyesuaikan komposisi shipment terhadap armada aktual tanpa menjalankan MT yang kompartemennya tidak terisi penuh.
+Orkestrasi `phase6.iterative_exact_capacity_assignment.v11` menjalankan grouping dan MT assignment secara bertingkat: 32 KL/4 LO, 24 KL/3 LO, 16 KL/2 LO, lalu 8 KL/1 LO. Hanya grup yang berhasil mendapat status `ASSIGNED` atau `ASSIGNED_WITH_DELAY` yang mengonsumsi LO. Jika grup besar tidak memiliki MT berkapasitas sama yang available dan compatible, grup tersebut dibubarkan dan LO-nya diprediksi ulang pada tier berikutnya. Di setiap tier, multi-LO tetap wajib memenuhi evidence cluster/shift/time/rute Fase 5, sedangkan candidate MT wajib lulus vehicle type, project tag, depot, dan kapasitas untuk seluruh SPBU. Tidak ada partial-load fallback: shipment 32/24/16/8 KL masing-masing hanya dapat memakai MT 32/24/16/8 KL. Dengan demikian optimizer menyesuaikan komposisi shipment terhadap armada aktual tanpa menjalankan MT yang kompartemennya tidak terisi penuh.
 
 MT ranking memakai Phase 4 historical `P(MT|SPBU)` dengan deterministic Laplace smoothing. Historical affinity hanya score/ranking; rule Phase 1 dari `app.compatibility.evaluate_compatibility_entities` tetap hard filter terpisah. Untuk multi-SPBU shipment, MT harus lulus rule untuk seluruh SPBU (intersection). Capacity profile dihitung dari master `capacity_label`/`vehicle_type_tag` dan `number_of_compartments`; setiap kompartemen bernilai 8 KL. Policy `EXACT_COMPARTMENT_MATCH` mewajibkan `jumlah LO = jumlah kompartemen MT`, sehingga seluruh kapasitas MT selalu terisi sebelum trip dijalankan. Candidate berbeda kapasitas disimpan sebagai diagnostic `CAPACITY_COMPARTMENT_MISMATCH`; candidate yang gagal master/tag compatibility disimpan sebagai `MASTER_COMPATIBILITY_FAIL`. Compartment count kosong dapat diinfer dari kapasitas dengan warning, tetapi data master yang saling bertentangan menjadi validation error.
 
@@ -855,17 +910,123 @@ Authorization mengikuti seam existing melalui `X-User` dan `X-Permissions`: `pha
 
 Phase 6 boleh menghitung travel estimate, cycle time, preliminary visit sequence dalam satu shipment, dan rolling multi-trip availability. Phase 6 tidak memanggil Google Route Optimization API/GMPRO `optimizeTours`, tidak menyelesaikan full fleet VRP, tidak mengoptimalkan urutan semua shipment/MT secara global, dan tidak menghasilkan final optimized route.
 
-Phase 7 tetap bertanggung jawab atas final route optimization, fleet-wide constraints, global visit sequencing, driver hours, cost objective, dan Google Route Optimization API/GMPRO bila dipilih.
+Phase 7 sekarang bertanggung jawab atas final route optimization, fleet-wide constraints, global visit sequencing, vehicle working time, depot bay queue, dan cost objective. Implementasi tidak memakai Google Route Optimization API/GMPRO; optimization engine adalah OR-Tools.
 
 Verification terakhir:
 
-- migration PostgreSQL memiliki single head revision `0016_phase5_evidence_coverage`
-- seluruh **65 backend tests** lulus pada deployment image
-- **24 focused Phase 6 tests** lulus, termasuk asynchronous queue/worker recovery, iterative 32→24→16→8 KL assignment, three-LO/24-KL grouping, exact full-load capacity matching, tag compatibility, route geometry, dan pagination/lazy payload
+- migration PostgreSQL memiliki single head revision `0022_phase8_manual_dispatch`
+- full deployment-image regression terbaru lulus **158 tests**; focused Phase 7 lulus **69 tests**, termasuk current-version warm start V1→V2→V3, actual-state freeze/release MT, retained working-time tanpa double count future trip, reference time/timezone depot, asynchronous reservation, bay subset/timeout semantics, depot gate-out window yang tidak membatasi return MT, geometry depot-stop-depot, activation cost satu kali per MT, dan material gate-out change
+- focused Phase 8 lulus **7 tests** untuk immutable source snapshot, canonical eligibility/tag guardrail, selected-MT Google road geometry yang read-only, multi-trip availability dan cascade, duplicate LO/delete-trip recovery, KL capacity gap, finalization, finalized read-only state, serta dispatch versioning
+- focused Phase 5 + Phase 6 regression suite berisi **39 tests**
+- Phase 7 acceptance/hardening meliputi warm start, dispatcher-selected reference time, compartment, multi-trip, ETA, freeze, DONE/ONGOING, bay compatibility/queue/loading, versioning, dropped reason, final geometry, dan trip-number continuation
 - TypeScript type checking dan Vite production build lulus
-- API health, kedua generator Data Demo, closest-capacity MT subset, timestamp validation, rolling assignment, DRIVE route cache/fallback, encrypted settings, exports, dan persistence telah diuji
-- Vite memberi non-blocking warning untuk application chunk sekitar 1,79 MB; code splitting ECharts/page modules menjadi technical debt performance
+- API health, kontrak OpenAPI Phase 7, end-to-end V1 persistence, route fallback geometry, parameter/constraint profiles, migration, dan existing Phase 0–6 behavior telah diuji
+- visual browser smoke test lulus untuk navigation, depot-scoped empty state, Create Job modal, dan dokumentasi Phase 7 tanpa console error
+- Vite memberi non-blocking warning untuk application chunk sekitar 1,90 MB; code splitting ECharts/page modules menjadi technical debt performance
 - host Python tanpa dependency ML lengkap tidak dapat menjalankan dua training tests Phase 5; deployment image adalah verification environment canonical dan membutuhkan `NUMBA_CPU_NAME=generic` serta `NUMBA_DISABLE_JIT=1` pada ARM untuk menghindari illegal-instruction dari Numba/UMAP
+
+### Phase 7 — Dynamic Multi-Trip VRP & Depot Bay Queue Optimization
+
+Phase 7 adalah workspace operational control per depot dan operating date. Dispatcher membuat Job, memilih completed Phase 6 Prediction Run secara eksplisit berdasarkan Run ID, mengimpor LO + warm start tanpa mengubah tabel Phase 6, memuat MT canonical depot, mengisi initial ETA Depot, memperbarui actual bay state/queue, memilih parameter profile, lalu menjalankan initial plan atau reroute.
+
+Card **Job Management** memuat tombol **Create New Job**, pencarian lintas Job ID/nama/tanggal/depot/route/status, sorting pada setiap header data, pilihan 5/10/25/50 row, pagination, Open Job, dan Delete Job. Delete selalu meminta konfirmasi dan menghapus workspace operasional Phase 7 beserta versi/snapshot turunannya, tetapi tidak menghapus Prediction Run Phase 6 atau master data. Job berstatus `CALCULATING` tidak dapat dihapus; route-provider request log tetap dipertahankan sebagai audit evidence tanpa referensi Job.
+
+Tab **LO Management** dan **MT Management** menyediakan search, sorting pada setiap header data, pilihan jumlah row, serta pagination Previous/Next. LO Management menampilkan **System ETA Depot** dari trip tepat tempat LO tersebut ditugaskan: semua LO Trip 1 memakai waktu kembali Trip 1, semua LO Trip 2 memakai waktu kembali Trip 2, dan seterusnya; sebelum ada current route assignment nilainya kosong. Select-all LO berlaku pada halaman aktif, sementara perubahan draft ETA/status MT tetap dipertahankan saat user mencari, mengurutkan, atau berpindah halaman. MT Management memiliki **Delivery Status** turunan dari status LO assignment aktif: `ONGOING` menang bila ada LO ongoing, jika tidak `DONE` menang bila ada LO done, sedangkan MT dengan hanya LO planned atau tanpa assignment tampil `PLANNED`. System ETA pada MT hanya tampil ketika Delivery Status `ONGOING` dan nilainya sama dengan return ETA trip current-version tempat LO ongoing tersebut berada; pada status lainnya System ETA tampil kosong. Karena nilai ini dihitung dari LO, Apply Operational Update langsung tercermin setelah workspace di-refresh tanpa menyimpan sumber status kedua. Tab **Bay Management** menyediakan Delete Bay dengan konfirmasi; bay dikeluarkan dari konfigurasi aktif secara soft-delete dan current occupancy/queue terkait dibersihkan, sedangkan snapshot serta histori route/bay assignment tetap auditable. Grid kecepatan pengisian product memisahkan nama product, input angka, dan unit `min / compartment` agar label panjang tidak bertumpuk.
+
+Lifecycle ETA MT memakai `planned_eta_depot` sebagai satu-satunya input availability untuk Initial dan Reroute. Semua MT wajib memiliki Planned ETA dan nilainya harus sama atau lebih lambat dari waktu optimasi pilihan dispatcher; optimasi 00:00 dengan Planned ETA 00:00 valid, sedangkan optimasi 12:00 dengan Planned ETA 07:00 ditolak sebelum Job masuk `CALCULATING`. Setelah hasil berhasil dipersist, Planned ETA otomatis di-reset menjadi `null`; run gagal tidak menghapus input. `system_eta_depot` masih `null` sebelum V1 karena belum ada hasil kalkulasi. Pada MT Management, System ETA hanya ditampilkan untuk MT berstatus `ONGOING` dan mengambil `estimated_return_depot` trip current-version yang berisi LO ongoing tersebut—termasuk Trip 2 bila Trip 2 sedang berlangsung. MT berstatus `PLANNED`, `DONE`, atau tanpa LO ongoing menampilkan System ETA `null`. User ETA Override telah dikeluarkan dari API, UI, dan perhitungan solver; kolom database legacy dipertahankan kosong untuk kompatibilitas skema.
+
+Tab **Route Plan** memakai dropdown MT, box **Search MT number or ID**, dan pagination berbasis MT unik. Search mencocokkan registration/no MT maupun canonical `mt_id`, mengembalikan pagination ke halaman pertama, dan memakai scope yang sama untuk Route Plan, **Vehicle Multi-Trip Timeline**, serta Route Details. Kontrol pagination ditempatkan tepat di bawah ringkasan **Solver Status / Gate Out / Dispatch Span**. Card terpisah Vehicle Multi-Trip Timeline berada setelah Route Plan dan sebelum Route Details, sehingga Gantt terlihat sebelum daftar route yang panjang. Gantt hanya merender MT pada halaman aktif; sumbu X selalu memakai gate-out pertama sampai return depot terakhir pada route version, sedangkan registration MT berada pada sumbu kanan. Bar membedakan antri bay, pengisian, gate process, perjalanan, dan pelayanan SPBU. Milestone menunjukkan gate-out/perjalanan, tiba di setiap SPBU, perjalanan berikutnya, dan kembali ke depot; mouseover menampilkan popup MT, trip, status, lokasi, timestamp, dan durasi. Queue/loading yang terjadi sebelum gate-out pertama ditampilkan pada batas awal dengan timestamp aktual di tooltip. Dropdown `All MT`/satu nomor MT menggunakan state yang sama dengan Gantt dan route details. Kolom Product membaca nama canonical dari `master_product.product_name` (misalnya Bio Solar atau Pertamax); `product_id` tetap tersedia pada payload untuk lineage dan filter. Card **Operational KPI Groups** berada di tab **Simulation**, tepat di bawah **Simulation KPI**.
+
+Tab **Comparison** membandingkan dua LO List immutable dalam satu Job: source Phase 6, Phase 7 V1, V2, dan versi berikutnya. Dispatcher memilih LO List A dan B lalu klik **Apply Comparison**. Dashboard menampilkan coverage assigned/drop, LO yang hanya ada di salah satu list, stabilitas/perubahan MT, serta jumlah dan rata-rata perubahan gate-out/ETA Depot. Tabel detail menggunakan Loading Order ID sebagai key dan memperlihatkan tujuan SPBU, product/volume, MT LO A/B, status/trip, gate-out A/B, ETA Depot A/B, dan delta waktu `B − A`; search, sorting header, page size, dan pagination tersedia untuk audit list besar. Data Phase 6 berasal dari `prediction_shipment_line` + `prediction_assignment`/`prediction_trip`, sedangkan setiap Phase 7 source dibaca langsung dari snapshot `route_version_lo_assignment` + `route_version_trip`, sehingga Comparison tidak mengubah current route maupun source lama.
+
+Tab **Geographic Map** memakai pagination MT yang sama sehingga pilihan `All MT` tidak lagi merender seluruh armada sekaligus. Hanya trip untuk halaman aktif yang dibuat sebagai layer Leaflet dan daftar legend juga dibatasi pada scope tersebut. Map menggunakan canvas renderer, validasi koordinat, batas jumlah geometry point per trip, ukuran eksplisit, serta `invalidateSize` + `fitBounds` setiap versi/filter/page berubah. Ini mencegah blank map setelah perpindahan tab dan menghindari ratusan polyline, marker, serta legend card membebani UI dalam satu render. Geometry halaman di-hydrate secara lazy dengan prioritas cache full-route, exact ordered-stop geometry dari Route Version/Prediction Trip historis, live Google Routes, lalu OSRM sebagai fallback **geometry-only**. OSRM tidak mengubah matrix, distance, ETA, assignment, sequence, atau cost solver; hasil Route Version tetap immutable. Garis solid berarti road geometry berhasil, sedangkan garis putus-putus tetap menandai master-coordinate fallback.
+
+Pada Job Overview, tombol **Validate** berada di card **Optimization Flow**, tepat sebelum **Run Initial Optimization**. Klik Validate menjalankan pre-solver gate terhadap current LO, MT, bay state, loading duration, dan draft constraint; hasil **Optimization Readiness** (`READY`, `WARNING`, atau `BLOCKED`) ditampilkan sebagai popup, bukan card permanen.
+
+Klik **Run Initial Optimization** selalu membuka dialog tanggal dan waktu referensi. Tanggal Initial harus sama dengan `operating_date` Job; waktu tersebut menjadi batas awal availability MT, Bay State Effective/queue, departure matrix, dan seluruh perhitungan waktu route. Klik **Re-Optimize Now** membuka dialog yang sama dengan tanggal dikunci ke tanggal Initial. Jam Re-optimize tidak boleh mundur dari run terakhir dan menjadi patokan `current time` untuk freeze window serta state bay. Dialog juga menghitung saran minimum `route_optimization_time_limit` dari jumlah LO optimizable dan MT tersedia: `round30(15 + 0.25 × LO + 10 × ceil(LO / MT))`, dibatasi 30–3.600 detik. Jika parameter aktif di bawah saran, dispatcher harus menaikkannya atau mencentang konfirmasi sadar-risiko; backend menerapkan konfirmasi yang sama. Timestamp pilihan dispatcher disimpan pada `optimization_run.optimization_reference_time`, solver metadata, dan audit state snapshot; jam server API tidak digunakan sebagai effective time operasional bay.
+
+Initial Optimization dan Re-Optimize bersifat asynchronous dari sudut pandang UI. Setelah preflight berhasil, API mengunci Job ke `CALCULATING`, mengembalikan `202 Accepted`, lalu menjalankan matrix, solver, dan persistence melalui background task dengan database session terpisah. UI langsung menutup dialog dan kembali ke **Job Management** tanpa overlay global; row Job menampilkan spinner/status `CALCULATING` dan daftar diperbarui otomatis setiap dua detik hingga menjadi `ACTIVE`, `CLOSED`, atau `FAILED`. Duplicate optimization dan Delete Job tetap ditolak selama kalkulasi. Jika proses API terhenti, recovery startup menandai run in-process sebagai `FAILED/INTERRUPTED` agar Job tidak tertinggal permanen pada status `CALCULATING`.
+
+Progress run disimpan secara auditable pada `optimization_run.solver_metadata` sebagai `BUILDING_MATRIX`, `SOLVING_ROUTES`, `PERSISTING_RESULT`, lalu `COMPLETED`/`FAILED`, lengkap dengan `progress_pct` dan `stage_updated_at`. `PERSISTING_RESULT` mencakup materialisasi trip/assignment serta final route geometry, sehingga Job tetap `CALCULATING` walaupun OR-Tools sudah selesai. Kegagalan Google Routes seperti `403` atau `429` tidak menggagalkan hasil solver: request dihentikan oleh geometry time/request guard, route memakai fallback yang diberi label, lalu versi tetap disimpan. Durasi wall-clock dapat lebih panjang dari `solve_duration_ms` bila host/Docker sempat sleep atau pause; status disebut stuck hanya jika stage tidak berubah, tidak ada aktivitas proses/database, dan tidak ada terminal recovery/error.
+
+Pemilihan Prediction Run bersifat ketat dan auditable. Dropdown hanya menampilkan run Phase 6 berstatus `COMPLETED` pada depot yang sama dan memiliki sedikitnya satu LO dengan tanggal operasional lokal yang sama dengan `operating_date` Job Phase 7. Tanggal yang tertulis di `prediction_run_no` seperti `PRED-20260826-71EF00` adalah tanggal pembuatan run, bukan jaminan tanggal operasional LO. Tanggal operasional diturunkan dari `shipment_start_datetime_local`, atau dari timestamp UTC yang dikonversi memakai timezone Master Depot. Jika dropdown kosong, periksa kombinasi depot, Job Operating Date, status run, dan tanggal lokal LO; buat Job baru dengan tanggal yang benar atau hasilkan completed Phase 6 Run untuk tanggal tersebut. Jangan mengubah tanggal snapshot atau source run secara langsung karena akan merusak lineage audit.
+
+```text
+Saved Phase 6 Run (immutable)
+    → Phase 7 LO operational state + Phase 6 soft warm start
+    → cached Google Routes distance/time matrix
+    → OR-Tools Routing Solver per physical-vehicle trip round
+    → CP-SAT compartment assignment
+    → FIFO_BALANCED bay eligibility, queue, loading, and gate-out schedule
+    → event-driven return/availability propagation
+    → post-bay per-trip repair (failed LO → candidate MT audit → global FIFO bay re-schedule)
+    → immutable route version + state and parameter snapshots
+```
+
+Warm-start lineage bersifat berantai. Phase 6 hanya menjadi seed untuk **Initial Optimization → V1**. Saat reroute, solver membaca `current_route_version_id`: remaining V1 menjadi seed V2, remaining V2 menjadi seed V3, dan seterusnya. DONE disalin apa adanya; ONGOING mempertahankan trip/MT aktif tetapi return-to-depot mengikuti Planned ETA aktual dispatcher; near-term PLANNED dengan MT on-time/lebih cepat mempertahankan MT dan relative stop sequence sambil menghitung ulang route/bay time; near-term PLANNED dengan MT terlambat atau unavailable dilepas kembali ke routing pool. Future PLANNED lain tetap dapat diubah dengan penalty previous vehicle/shipment/sequence/gate-out/bay agar versi baru tidak berubah tanpa manfaat objective yang cukup. Reroute hanya membawa working time trip DONE/ONGOING; operating time future dari versi lama tidak dihitung ganda dan dihitung ulang oleh solver. Metadata run mencatat sumber/version warm start dan jumlah seed pada setiap multi-trip round.
+
+Kontrak utama:
+
+- Phase 6 predicted shipment, MT, pairing, confidence, dan model ID disimpan terpisah dari current Phase 7 vehicle/trip/shipment/compartment assignment.
+- Phase 6 adalah warm start khusus V1; current Route Version adalah warm start untuk setiap reroute berikutnya. Setiap business constraint Phase 7 mempunyai `enabled`, mode `HARD`/`SOFT`, dan nilai penalty yang disimpan di parameter profile. `HARD` wajib lolos dan mengabaikan penalty; `SOFT` boleh dilanggar dengan penalty; disabled tidak dienforce dan penalty efektifnya nol.
+- `vehicle_working_time.limit_minutes` adalah satu-satunya sumber batas kerja MT. Planned ETA hanya menyatakan kapan MT tersedia; MT system-planned yang masih parkir belum memakai working time. Jam kerja dimulai saat MT dilepas ke queue/loading, lalu mencakup queue aktual, loading, perjalanan dan service sampai kembali ke depot; field lama `default_vehicle_working_time_minutes` sudah dihapus.
+- `depot_operating_window` membatasi awal loading dan gate-out, bukan return MT. Dengan window 00:00–23:59, loading boleh mulai pukul 00:00 dan gate-out terakhir boleh tepat 23:59; MT boleh kembali sesudahnya selama masih memenuhi `vehicle_working_time` dan SPBU receiving window. KPI Depot Operation Span dihitung dari first loading start sampai last gate-out.
+- Routing Solver dijalankan dalam physical-vehicle multi-trip loop. Setelah Trip 1 kembali, availability dan remaining working time diperbarui sebelum MT dapat menerima Trip 2 dan seterusnya.
+- CP-SAT compartment assignment menerapkan mode constraint untuk compartment capacity dan product separation, lalu mencatat setiap pelanggaran SOFT pada trip cost breakdown.
+- `bay_scheduler_strategy=FIFO_BALANCED` adalah default operational scheduler. Trip masuk antrean global menurut `vehicle_ready_at_depot`, preliminary gate-out, nomor trip, MT, dan LO sebagai tie-break deterministik. Scheduler memilih bay kompatibel dengan gate-out paling awal, lalu workload/jumlah assignment paling rendah; bay khusus produk diprioritaskan sebelum bay fleksibel bila waktu dan penalty sama. Enam bay multi-product yang identik akan membagi antrean secara merata tanpa pencarian kombinatorial.
+- Actual occupancy dan Current Physical Queue diblok lebih dahulu per bay. Trip berikutnya milik MT yang sama baru masuk antrean setelah gate-out aktual ditambah durasi route/return trip sebelumnya. `BAY_PRODUCT_CONSTRAINT` berarti tidak ada bay yang lolos eligibility struktural, sedangkan `BAY_WINDOW_EXHAUSTED` berarti bay kompatibel ada tetapi seluruhnya tidak dapat gate-out sebelum batas waktu. Kegagalan trip awal mencegah trip berikutnya melompati urutan fisik MT.
+- Route dan bay tetap memiliki parameter budget terpisah. `bay_optimization_time_limit`, `bay_cp_sat_workers`, dan `max_coordination_iterations` hanya memengaruhi strategi eksperimen `CP_SAT`; FIFO_BALANCED bersifat deterministik, tidak memakai search worker atau timeout bay. `CP_SAT` tetap dapat dipilih eksplisit pada tab Parameter untuk perbandingan/audit, tetapi bukan default operasional.
+- Route assignment belum dianggap final sebelum waktu queue/loading/gate-out bay diterapkan. `VEHICLE_TIME_EXHAUSTED`, `BAY_WINDOW_EXHAUSTED`, `BAY_CONGESTION`, dan komposisi `BAY_PRODUCT_CONSTRAINT` yang masih mungkin dipisah dikembalikan ke repair pool per physical trip. Kandidat diuji satu per satu dengan prioritas MT belum terpakai, ETA paling awal, remaining working time terbesar, lalu ID stabil. Setiap kandidat dihitung dari retained-trip state, diuji route/compartment, dan divalidasi lewat global FIFO bay re-schedule; satu group gagal tidak menggagalkan group lain. Jika grouping shipment/freeze tidak HARD, group yang tetap gagal dapat dipecah menjadi LO tunggal. Final drop baru dibuat setelah semua kandidat tercatat gagal; budget habis menjadi `POST_BAY_REASSIGNMENT_TIMEOUT`, bukan bukti `INFEASIBLE`. Metadata menyimpan candidate MT, ETA, sisa kerja, hasil/reason, split count, dan jumlah evaluation.
+- Terminasi `UNKNOWN`/`TIMEOUT` dibedakan dari bukti `INFEASIBLE`; kehabisan waktu tidak lagi disimpulkan sebagai ketidaklayakan fisik.
+- Default loading mode adalah `SEQUENTIAL`; model mendukung `PARALLEL` dengan `number_of_loading_arms`.
+- `DONE`, `ONGOING`, dan near-term `PLANNED` di dalam `freeze_window_minutes` diklasifikasikan per physical trip. DONE disalin, ONGOING mempertahankan assignment dengan actual return ETA, near-term PLANNED on-time mengunci MT/sequence tetapi menghitung ulang waktu, sedangkan MT late/unavailable melepaskan trip kembali ke routing pool. Jika satu LO frozen berada pada trip yang sama, seluruh trip diperlakukan sebagai unit execution yang konsisten.
+- Initial hanya dapat membuat baseline sekali. Setelah V1 tersedia, dispatcher memakai Re-Optimize untuk V2/V3; tanggal tetap sama dan waktu referensi bergerak maju secara kronologis.
+- Planned ETA Depot aktual dari dispatcher serta actual bay/queue state mengalahkan previous predicted state. Bay/queue state selalu disejajarkan ke timestamp Initial atau Reroute yang dimasukkan user. Reroute tidak menjalankan Phase 6 ulang.
+- Setiap run membuat `V1`, `V2`, dan seterusnya secara append-only bersama operational snapshot, parameter checksum/snapshot, solver metadata, cost, dropped reason, dan comparison/adherence.
+- LO infeasible tidak pernah hilang: result menyimpan reason seperti `NO_COMPATIBLE_MT`, `COMPARTMENT_INFEASIBLE`, `BAY_PRODUCT_CONSTRAINT`, `DEPOT_TIME_EXHAUSTED`, atau `UNSERVED_END_OF_DAY`.
+
+Tab **Parameter → Constraint Settings · Hard / Soft / Disabled** adalah sumber pengaturan constraint. Mengubah objective tidak otomatis mengubah mode constraint. Setiap run menyimpan seluruh rule, nilai penalty tersimpan, effective penalty, dan checksum pada immutable parameter snapshot. Nilai penalty hanya efektif ketika rule aktif dalam mode `SOFT`; nilainya tetap disimpan tetapi tidak dipakai saat `HARD`, sehingga dapat dipakai kembali jika dispatcher mengubah mode ke `SOFT`.
+
+Pada **Vehicle Activation Cost Rules**, `priority` hanya memilih rule biaya yang berlaku ketika beberapa rule cocok pada MT yang sama. Rule diurutkan dari priority terbesar; jika sama, rule dengan `vehicle_tag` didahulukan dari rule class-only. Hanya `activation_cost` dari rule pertama yang cocok yang dipakai, bukan dijumlahkan. Priority tinggi tidak otomatis membuat MT lebih disukai—activation cost yang lebih rendahlah yang membuat MT lebih menarik bagi objective. Rule ini tidak menggantikan MT–SPBU Compatibility atau HARD constraint lainnya; jika tidak ada rule yang cocok, activation cost MT adalah nol.
+
+`DONE`/`ONGOING`, satu identity assignment per LO, foreign-key/version integrity, dan append-only route version adalah safeguard struktural, bukan business constraint yang dapat dimatikan. Near-term `PLANNED` pada freeze window tetap configurable.
+
+Objectives tersedia tanpa mengubah mode constraint:
+
+- `MIN_TOTAL_COST`: activation + distance + operating + queue + loading + overtime + penalties.
+- `MIN_TOTAL_DISTANCE`: total route distance.
+- `MIN_TOTAL_OPERATING_TIME`: driving + waiting + SPBU service + depot queue + loading.
+
+Google Routes configuration Phase 7:
+
+- final map geometry memakai satu Compute Routes request per trip dengan SPBU sequence sebagai ordered intermediate waypoints, sehingga polyline mengikuti jalan untuk rangkaian Depot → seluruh stop → Depot;
+- ketika membuka tab Geographic Map, endpoint `POST /jobs/{job_id}/map/road-geometry` hanya meng-hydrate trip pada halaman MT aktif. Urutannya adalah full-route cache → exact historical road geometry → Google Routes → OSRM road geometry. Cache hasil hydration berlaku 30 hari secara default dan tidak menulis ulang Route Version;
+- OSRM adalah fallback geometry-only saat Google terkena `403`, `429`, timeout, atau tidak dikonfigurasi. Nilai distance/time OSRM tidak dipakai oleh optimizer maupun laporan route version, sehingga OR-Tools tetap menjadi satu-satunya penentu assignment dan stop order;
+- geometry request tidak dipanggil dari solver callback; fallback garis putus-putus hanya dipakai dan diberi label jika road provider gagal atau dinonaktifkan;
+- default final-geometry guard adalah `route_geometry_time_limit_seconds=120` dan `route_geometry_google_request_budget=500` untuk satu run; nilai dapat diperkecil pada parameter profile jika fallback cepat lebih penting daripada kelengkapan road geometry;
+- `403`/invalid key dan `429`/rate limit dicatat pada log provider, tetapi tidak mengubah solver result menjadi gagal. Setelah guard habis, remaining trip memakai cached/master fallback dan run melanjutkan persistence;
+- `route_vehicle_mode=GENERAL_VEHICLE` adalah default dan tidak memerlukan Large Vehicle Routing.
+- `route_vehicle_mode=TRUCK` hanya dipilih secara eksplisit. Pada deployment/region yang belum mendukung truck request, hasil harus tetap menunjukkan fallback/provider source dan tidak boleh disamarkan sebagai truck road result.
+- `traffic_aware` dan `route_matrix_cache_enabled` configurable.
+- Matrix dimaterialisasi sebelum solver callback. Google tidak pernah dipanggil dari cost callback OR-Tools.
+- Final selected legs dapat mengambil road geometry; cached/master-coordinate fallback terlihat sebagai `MIXED_OR_MASTER_FALLBACK`.
+
+Parameter profiles (`Balanced Default`, `Cost Efficiency`, `High Historical Adherence`, `Peak Operation`, `High Bay Congestion`) mendukung Load, Save sebagai versi berikutnya, dan Save As. Exact effective values selalu disalin ke immutable `optimization_parameter_snapshot`.
+
+Schema migration `0019_phase7_dynamic_vrp` menambah job/run/version/trip/stop/LO/vehicle result, operational state, bay state/queue/operation, parameter profile/snapshot/cost rules, serta Phase 7 route matrix cache/request log. Migration `0020_phase7_reference_time` menambah timestamp referensi optimasi yang dipilih dispatcher. Service logic dipisahkan di `phase7_service.py`, `phase7_optimization.py`, dan `phase7_matrix.py`; handler API tidak memuat solver logic.
+
+Environment dan run:
+
+```bash
+cd apps/api
+python -m pip install -r requirements.txt  # includes ortools
+pytest tests/test_phase7_dynamic_vrp.py
+
+# full stack and migrations
+docker compose up --build
+```
+
+Google API key tetap disimpan melalui Settings UI dan dienkripsi oleh `GOOGLE_ROUTES_ENCRYPTION_KEY`. Tidak ada key baru yang ditempatkan di frontend atau parameter snapshot.
 
 ## Phase Quality Gate
 
@@ -943,8 +1104,105 @@ Setiap phase harus melewati gate berikut sebelum phase berikutnya dimulai:
 - `PUT /api/v1/settings/google-routes`
 - `DELETE /api/v1/settings/google-routes/api-key`
 - `POST /api/v1/settings/google-routes/test`
+- `POST /api/v1/phase7/jobs`
+- `GET /api/v1/phase7/jobs?depot_id=...`
+- `GET /api/v1/phase7/jobs/{job_id}`
+- `DELETE /api/v1/phase7/jobs/{job_id}`
+- `GET /api/v1/phase7/jobs/{job_id}/prediction-runs`
+- `POST /api/v1/phase7/jobs/{job_id}/prediction-run`
+- `GET/PATCH /api/v1/phase7/jobs/{job_id}/loading-orders[/status]`
+- `POST /api/v1/phase7/jobs/{job_id}/vehicles/load-master`
+- `GET/PATCH /api/v1/phase7/jobs/{job_id}/vehicles`
+- `GET/PUT /api/v1/phase7/depots/{depot_id}/bays`
+- `DELETE /api/v1/phase7/depots/{depot_id}/bays/{bay_id}`
+- `GET/PUT /api/v1/phase7/jobs/{job_id}/bay-state`
+- `GET/POST /api/v1/phase7/jobs/{job_id}/validation`
+- `POST /api/v1/phase7/jobs/{job_id}/optimize`
+- `POST /api/v1/phase7/jobs/{job_id}/reroute`
+- `GET /api/v1/phase7/jobs/{job_id}/versions`
+- `GET /api/v1/phase7/jobs/{job_id}/versions/{version_id}`
+- `GET /api/v1/phase7/jobs/{job_id}/versions/{version_id}/trips/{trip_id}`
+- `GET /api/v1/phase7/jobs/{job_id}/simulation`
+- `GET /api/v1/phase7/jobs/{job_id}/map`
+- `POST /api/v1/phase7/jobs/{job_id}/map/road-geometry`
+- `GET /api/v1/phase7/jobs/{job_id}/cost-analysis`
+- `GET /api/v1/phase7/jobs/{job_id}/dropped-loading-orders`
+- `GET/POST/PUT /api/v1/phase7/parameter-profiles[...]`
+- `GET /api/v1/phase7/constraint-catalog`
 
-Route optimization / VRP endpoints belum diimplementasikan dan tetap menjadi scope Phase 7.
+### Handoff Phase 7 → Phase 8
+
+Phase 7 dan Phase 8 memakai data operasional yang sama sebagai lineage, tetapi mempunyai authority dan lifecycle berbeda. Phase 7 memilih assignment dan sequence fleet-wide melalui optimization; Phase 8 menerima satu hasil terpilih sebagai snapshot lalu hanya mengizinkan adjustment manual serta recalculation lokal per trip.
+
+| Aspek | Phase 7 | Phase 8 |
+|---|---|---|
+| Input utama | Saved Phase 6 Prediction Run + current LO/MT/bay state | Phase 6 warm start atau Route Version Phase 7 yang dipilih |
+| Authority | Global assignment, multi-trip routing, compartment, bay, dan gate-out optimization | Human-reviewed MT–Trip–LO assignment, constraint guardrail, timeline, simulation, dan final dispatch |
+| Engine | OR-Tools Routing Solver, compartment CP-SAT, `FIFO_BALANCED` bay scheduler default | Tidak ada global solver; canonical validation + Google Routes per-trip Apply |
+| Version | Immutable Route V1/V2/...; current pointer berada pada Phase 7 Job | Dispatch V1/V2/... sebagai deep-copy snapshot dengan parent lineage |
+| Mutation source | Tidak menulis ulang Phase 6 | Tidak menulis ulang Phase 6 maupun Phase 7 |
+| Output | Optimized operational route candidate | Finalized, read-only, human-reviewed dispatch plan |
+
+Saat membuat Manual Dispatch Job, daftar Phase 7 Job dibatasi oleh depot dan operational date. Source route dibaca dinamis—tanpa hardcoded maximum version—kemudian vehicle, trip, LO scope, assignment, cluster, shift, tags, route metadata, dan configuration snapshot disalin ke tabel Phase 8. Perubahan Phase 7 setelah snapshot dibuat tidak mengubah Manual Dispatch Job yang sudah ada; dispatcher harus membuat job/version baru bila ingin memakai source terbaru.
+
+### Phase 8 — Manual Dispatching & Operational Simulation
+
+Phase 8 dimulai dari landing **Manual Dispatch Job List**, bukan langsung membuka editor. Create Job memakai dependent selection Depot → Operational Date → Phase 7 Job → source route dinamis. Source dapat berupa Phase 6 Prediction/Warm Start atau route Phase 7 mana pun. `Create & Load` membuat relational snapshot MT, trip, LO scope, assignment, cluster, shift, tag, route, configuration, dan lineage tanpa mengubah source.
+
+Workspace job memakai header persisten dan lima tab yang membaca current state yang sama: **Trip Management**, **Simulation Diagram**, **Daily Distribution Dashboard**, **Geographic Map**, dan **History / Audit**. Operasi Add/Remove/Move/Reorder/Edit menandai trip `MODIFIED`. Tombol Apply menjalankan canonical compatibility, capacity/sequence/timeline validation, Google Routes per leg, service time, ETA SPBU, return depot, turnaround, next availability, dan invalidasi trip berikutnya menjadi `NEEDS_RECALCULATION`. Phase 8 tidak menjalankan OR-Tools atau global VRP reoptimization.
+
+Tab **Geographic Map** mempunyai search box nomor/ID MT dan dropdown **Select No. MT**. Map hanya memuat satu MT terpilih agar ringan, tetapi menampilkan seluruh trip MT itu. Geometry memakai hasil Google Routes yang sudah tersimpan atau satu full-route Google request Depot → ordered SPBU → Depot untuk source snapshot yang belum memiliki geometry Google. Hydration bersifat read-only dan tidak mengubah assignment, sequence, ETA, status, distance, atau dispatch version. Jika Google Routes gagal/tidak dikonfigurasi, error ditampilkan per trip dan route tidak diganti garis lurus.
+
+Lifecycle job adalah `DRAFT → IN_PROGRESS → READY → FINALIZED`. Lifecycle trip membedakan `DRAFT`, `MODIFIED`, `CALCULATING`, `VALID`, `WARNING`, `CONFLICT`, dan `NEEDS_RECALCULATION`. Hanya Apply sukses yang menghasilkan route/timeline authoritative. Finalized job tidak dapat diedit langsung; perubahan lanjutan wajib melalui **Create New Version**.
+
+Simulation memakai KL sebagai capacity metric: gate-out demand KL, available MT capacity KL, capacity gap, serta Gantt `AVAILABLE_AT_DEPOT`/`TRIP`. Dashboard membedakan Time Utilization dari Volume Capacity Utilization, memakai saved shift/cluster source, dan dapat membuka filtered Unassigned LO. Finalization memblokir incompatibility, duplicate, uncalculated/stale route, dan timeline overlap; unassigned demand default-nya warning dengan acknowledgment. Finalized version read-only dan **Create New Version** menghasilkan deep-copy snapshot baru.
+
+Endpoint Phase 8:
+
+- `GET /api/v1/phase8/manual-dispatch/sources`
+- `GET/POST /api/v1/phase8/manual-dispatch/jobs`
+- `GET /api/v1/phase8/manual-dispatch/jobs/{job_id}`
+- `POST /api/v1/phase8/manual-dispatch/jobs/{job_id}/versions`
+- `GET /api/v1/phase8/manual-dispatch/jobs/{job_id}/vehicles/{vehicle_id}/eligible-loading-orders`
+- `POST /api/v1/phase8/manual-dispatch/jobs/{job_id}/trips`
+- `PATCH/DELETE /api/v1/phase8/manual-dispatch/jobs/{job_id}/trips/{trip_id}`
+- `POST/DELETE /api/v1/phase8/manual-dispatch/jobs/{job_id}/trips/{trip_id}/loading-orders[...]`
+- `POST /api/v1/phase8/manual-dispatch/jobs/{job_id}/loading-orders/{lo_scope_id}/move`
+- `PUT /api/v1/phase8/manual-dispatch/jobs/{job_id}/trips/{trip_id}/stop-order`
+- `POST /api/v1/phase8/manual-dispatch/jobs/{job_id}/trips/{trip_id}/apply`
+- `GET /api/v1/phase8/manual-dispatch/jobs/{job_id}/simulation`
+- `GET /api/v1/phase8/manual-dispatch/jobs/{job_id}/dashboard`
+- `GET /api/v1/phase8/manual-dispatch/jobs/{job_id}/map?vehicle_id=...`
+- `GET /api/v1/phase8/manual-dispatch/jobs/{job_id}/audit`
+- `GET /api/v1/phase8/manual-dispatch/jobs/{job_id}/validation`
+- `POST /api/v1/phase8/manual-dispatch/jobs/{job_id}/finalize`
+
+### Phase 9 — Route–Model Alignment Evaluation
+
+Phase 9 membaca satu immutable Route Version Phase 7 dan menjelaskan seberapa selaras route tersebut dengan bukti historis yang menjadi lineage analitisnya. User hanya memilih **TBBM** dan **Route Version**; system kemudian membentuk **Source-Aligned Bundle** otomatis dari source Phase 5 model/training snapshot serta historical MT affinity yang scope dan cutoff waktunya eligible. Tidak ada pemilihan saved analysis/model manual pada flow utama dan tidak ada silent recomputation saat hasil tersimpan dibuka kembali.
+
+Empat metric ditampilkan terpisah pada skala `0–100%`:
+
+- **Cluster Cohesion**: proporsi pasangan SPBU evaluable dalam trip yang berada pada cluster Phase 5 yang sama;
+- **Shift Alignment**: historical `P(route shift | SPBU)` berdasarkan planned gate-out dan shift snapshot source model;
+- **Historical SPBU Pairing**: mean symmetric dari `P(B|A)` dan `P(A|B)` untuk unique SPBU pair dalam trip;
+- **Historical MT Affinity**: raw historical `P(MT|SPBU)` untuk assigned MT.
+
+Metric tidak dicampurkan menjadi overall score, tidak memakai label baik/buruk, dan tidak menghasilkan rekomendasi operasional. `0%` berarti denominator historis tersedia tetapi pattern tidak pernah terlihat; `N/A` berarti bukti atau assignment yang diperlukan tidak cukup. Evidence coverage, resolution method, historical period, checksum bundle, dan detail numerator/denominator tetap ditampilkan terpisah agar hasil auditable.
+
+Dashboard menyediakan metric cards, overview/distribution, evidence coverage, Source-Aligned Bundle, **Trip Alignment Matrix**, dan Loading Order detail. Trip Alignment Matrix memiliki kolom **No. LO** dan **No. SPBU** terpisah dari jumlah LO/SPBU, server-side search untuk shipment/trip/MT/shift/LO/SPBU/nama SPBU, sorting per kolom, serta pagination `10/25/50/100`. Tabel Loading Order mempunyai search, sorting, pagination, dan evidence drawer sendiri; kontrol kedua tabel tidak mengubah aggregate route-level.
+
+Endpoint Phase 9:
+
+- `GET /api/v1/phase9/route-model-alignment/routes?depot_id=...`
+- `POST /api/v1/phase9/route-model-alignment/evaluations`
+- `GET /api/v1/phase9/route-model-alignment/evaluations/by-route/{route_version_id}`
+- `GET /api/v1/phase9/route-model-alignment/evaluations/{evaluation_run_id}`
+- `GET /api/v1/phase9/route-model-alignment/evaluations/{evaluation_run_id}/trips`
+- `GET /api/v1/phase9/route-model-alignment/evaluations/{evaluation_run_id}/rows`
+- `GET /api/v1/phase9/route-model-alignment/evaluations/{evaluation_run_id}/rows/{evaluation_row_id}`
+
+Persistence Phase 9 memakai evaluation run, one-row-per-LO alignment snapshot, dan unique trip-pair evidence. Idempotency menggunakan `route_version_id + source_bundle_checksum + algorithm_version`; perubahan source bundle atau algorithm version membuat run baru tanpa mengubah Route Version.
 
 ## Important Design Principles
 
@@ -952,7 +1210,10 @@ Route optimization / VRP endpoints belum diimplementasikan dan tetap menjadi sco
 - Pisahkan official master rule, operational instruction, observed behavior, analytical finding, recommendation, dan approved master-data change.
 - Semua canonical dan derived records harus menjaga lineage jika memungkinkan.
 - Jangan menggunakan LLM untuk deterministic analytics.
-- Jangan implement route optimization sebelum Phase 6 selesai.
+- Phase 7 route optimization hanya boleh membaca saved Phase 6 sebagai warm start; jangan menulis balik atau menjalankan Phase 6 otomatis saat reroute.
+- Phase 8 hanya boleh menyalin Phase 6/7 sebagai working snapshot; jangan menulis balik source dan jangan menjalankan global reoptimization otomatis.
+- Phase 9 hanya menjelaskan alignment terhadap historical evidence; jangan mengubahnya menjadi route quality score, pass/fail, ranking, atau recommendation.
+- Google Routes menyediakan travel data dan geometry saja; OR-Tools adalah satu-satunya optimization engine Phase 7.
 - Jangan tampilkan uncertainty sebagai fakta pasti; gunakan status seperti `UNKNOWN`, `UNMAPPED`, `AMBIGUOUS`, `LOW CONFIDENCE`, `PARTIAL`, atau `INSUFFICIENT DATA`.
 
 ## Documentation
@@ -967,6 +1228,9 @@ Dokumen pendukung:
 - `docs/TAG_MODEL.md`
 - `docs/TAG_COMPATIBILITY.md`
 - `docs/DATA_QUALITY.md`
+- `docs/PHASE_7_DYNAMIC_VRP.md`
+- `docs/PHASE_8_MANUAL_DISPATCH.md`
+- `docs/PHASE_9_ROUTE_MODEL_ALIGNMENT.md`
 - `docs/SHIPMENT_MODEL.md`
 - `docs/GPS_MODEL.md`
 - `docs/PHASES.md`

@@ -9,7 +9,7 @@ import shutil
 import tempfile
 from collections import Counter
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, time
 from io import BytesIO, StringIO
 from pathlib import Path
 
@@ -17,16 +17,31 @@ from fastapi import Body, Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import String, Time, cast, delete, desc, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .compatibility import evaluate_mt_spbu_compatibility
-from .affinity_intelligence import build_affinity_date_availability, build_affinity_intelligence_payload
+from .affinity_intelligence import (
+    build_affinity_date_availability,
+    build_affinity_intelligence_payload,
+    delete_saved_affinity_analysis_config,
+    get_saved_affinity_analysis_config,
+    list_saved_affinity_analysis_configs,
+    save_affinity_analysis_config,
+)
 from .config import get_settings
 from .database import SessionLocal, get_db
-from .departure_intelligence import build_departure_date_availability, build_departure_intelligence_payload, build_shift_intelligence_payload
+from .departure_intelligence import (
+    build_departure_date_availability,
+    build_departure_intelligence_payload,
+    build_shift_intelligence_payload,
+    delete_saved_shift_analysis_config,
+    get_saved_shift_analysis_config,
+    list_saved_shift_analysis_configs,
+    save_shift_analysis_config,
+)
 from .importer import ImportProcessor
 from .models import (
     BridgeMTTag,
@@ -50,11 +65,22 @@ from .models import (
     StgSPBU,
     TagAlias,
 )
-from .normalization import clean_str, infer_tag_type, make_id, normalize_key, normalize_product, parse_coordinate, parse_mt_name, source_int, source_number, split_project_tags
-from .pairing_intelligence import build_pairing_date_availability, build_pairing_intelligence_payload
+from .normalization import clean_str, infer_tag_type, make_id, normalize_key, normalize_product, parse_coordinate, parse_mt_name, source_int, source_number, source_time, split_project_tags
+from .pairing_intelligence import (
+    build_pairing_date_availability,
+    build_pairing_intelligence_payload,
+    delete_saved_pairing_analysis_config,
+    get_saved_pairing_analysis_config,
+    list_saved_pairing_analysis_configs,
+    save_pairing_analysis_config,
+)
 from .phase5_behavioral import recover_interrupted_behavioral_training_runs
 from .phase5_routes import router as phase5_router
 from .phase6_routes import router as phase6_router
+from .phase7_routes import router as phase7_router
+from .phase8_routes import router as phase8_router
+from .phase9_routes import router as phase9_router
+from .phase7_service import recover_interrupted_phase7_optimizations
 from .google_routes_settings_routes import router as google_routes_settings_router
 from .tag_consistency import build_tag_consistency_payload, get_tag_consistency_detail
 
@@ -73,6 +99,13 @@ async def lifespan(_app: FastAPI):
         # Recovery must never turn a diagnostic cleanup into another app-load
         # failure. Normal endpoint database errors remain visible independently.
         logger.exception("Could not recover interrupted Phase 5 behavioral training runs during startup.")
+    try:
+        with SessionLocal() as db:
+            recovered = recover_interrupted_phase7_optimizations(db)
+        if recovered:
+            logger.warning("Recovered %s interrupted Phase 7 optimization job(s).", recovered)
+    except Exception:
+        logger.exception("Could not recover interrupted Phase 7 optimization runs during startup.")
     yield
 
 
@@ -86,6 +119,9 @@ app.add_middleware(
 )
 app.include_router(phase5_router)
 app.include_router(phase6_router)
+app.include_router(phase7_router)
+app.include_router(phase8_router)
+app.include_router(phase9_router)
 app.include_router(google_routes_settings_router)
 
 
@@ -132,9 +168,56 @@ class ShiftAnalysisRequest(BaseModel):
     sort_direction: str = "desc"
 
 
+class SaveShiftAnalysisConfigRequest(BaseModel):
+    name: str
+    depot_id: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    bucket_minutes: int | None = None
+    search: str | None = None
+    sort_column: str | None = None
+    sort_direction: str | None = None
+    assignment_method: str | None = None
+    shift_config: list[dict] = Field(default_factory=list)
+    ui_state: dict = Field(default_factory=dict)
+    departure_analysis_snapshot: dict
+    shift_analysis_snapshot: dict
+
+
+class SavePairingAnalysisConfigRequest(BaseModel):
+    name: str
+    depot_id: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    product_id: str | None = None
+    search: str | None = None
+    sort_column: str | None = None
+    sort_direction: str | None = None
+    ui_state: dict = Field(default_factory=dict)
+    pairing_analysis_snapshot: dict
+
+
+class SaveAffinityAnalysisConfigRequest(BaseModel):
+    name: str
+    depot_id: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    product_id: str | None = None
+    minimum_observations: int | None = None
+    confidence: str | None = None
+    temporal_bucket: str | None = None
+    recent_days: int | None = None
+    top_n: int | None = None
+    edge_metric: str | None = None
+    selected_spbu_id: str | None = None
+    selected_mt_id: str | None = None
+    ui_state: dict = Field(default_factory=dict)
+    affinity_analysis_snapshot: dict
+
+
 IMPORT_TEMPLATE_COLUMNS = {
     "MOBIL_TANGKI": ["id", "name", "assignee", "hubId", "vehicleType tag", "project_tag", "numberOfCompartments", "Depot"],
-    "SPBU": ["Nama SPBU", "Address", "Kota", "Coordinate", "jarak_km", "waktu_menit", "Vehicle Type tag", "Project tag", "Depot"],
+    "SPBU": ["Nama SPBU", "Address", "Kota", "Coordinate", "jarak_km", "waktu_menit", "Vehicle Type tag", "Project tag", "Depot", "Official Window Start", "Official Window End"],
     "LOADING_ORDER": [
         "area_id",
         "area",
@@ -380,8 +463,24 @@ def foundation_charts(depot_id: str | None = None, db: Session = Depends(get_db)
 
 
 @app.get("/api/v1/master/mt")
-def list_mt(limit: int = 100, offset: int = 0, db: Session = Depends(get_db)) -> list[dict]:
-    rows = db.scalars(select(MasterMT).order_by(MasterMT.vehicle_registration).offset(offset).limit(limit)).all()
+def list_mt(
+    limit: int = 100,
+    offset: int = 0,
+    depot_id: str | None = None,
+    active_only: bool = False,
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    statement = select(MasterMT)
+    if depot_id:
+        statement = statement.where(MasterMT.depot_id == depot_id)
+    if active_only:
+        statement = statement.where(MasterMT.active_status == "ACTIVE")
+    rows = db.scalars(
+        statement
+        .order_by(MasterMT.vehicle_registration)
+        .offset(offset)
+        .limit(min(max(limit, 1), 10000))
+    ).all()
     return [public(row) for row in rows]
 
 
@@ -395,8 +494,19 @@ def get_mt(mt_id: str, db: Session = Depends(get_db)) -> dict:
 
 
 @app.get("/api/v1/master/spbu")
-def list_spbu(limit: int = 100, offset: int = 0, db: Session = Depends(get_db)) -> list[dict]:
-    rows = db.scalars(select(MasterSPBU).order_by(MasterSPBU.spbu_code).offset(offset).limit(limit)).all()
+def list_spbu(
+    limit: int = 100,
+    offset: int = 0,
+    depot_id: str | None = None,
+    active_only: bool = False,
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    statement = select(MasterSPBU)
+    if depot_id:
+        statement = statement.where(MasterSPBU.primary_depot_id == depot_id)
+    if active_only:
+        statement = statement.where(MasterSPBU.active_status == "ACTIVE")
+    rows = db.scalars(statement.order_by(MasterSPBU.spbu_code).offset(offset).limit(min(max(limit, 1), 10000))).all()
     sync_spbu_coordinates_from_source(db, rows)
     return [public(row) for row in rows]
 
@@ -660,6 +770,7 @@ def depot_departure_intelligence(
     sort_direction: str = "desc",
     confidence_level: str | None = None,
     spbu_ids: str | None = None,
+    profile_search: str | None = None,
     db: Session = Depends(get_db),
 ) -> dict:
     parsed_spbu_ids = [item.strip() for item in spbu_ids.split(",") if item.strip()] if spbu_ids is not None else None
@@ -676,12 +787,38 @@ def depot_departure_intelligence(
         sort_direction=sort_direction,
         confidence_level=confidence_level,
         spbu_ids=parsed_spbu_ids,
+        profile_search=profile_search,
     )
 
 
 @app.get("/api/v1/departure-intelligence/available-dates")
 def depot_departure_available_dates(depot_id: str, db: Session = Depends(get_db)) -> dict:
     return build_departure_date_availability(db, depot_id)
+
+
+@app.get("/api/v1/departure-intelligence/saved-shift-configurations")
+def departure_saved_shift_configurations(
+    depot_id: str | None = None,
+    limit: int = 10,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+) -> dict:
+    return list_saved_shift_analysis_configs(db, depot_id=depot_id, limit=limit, offset=offset)
+
+
+@app.post("/api/v1/departure-intelligence/saved-shift-configurations")
+def departure_save_shift_configuration(request: SaveShiftAnalysisConfigRequest, db: Session = Depends(get_db)) -> dict:
+    return save_shift_analysis_config(db, request.model_dump())
+
+
+@app.get("/api/v1/departure-intelligence/saved-shift-configurations/{config_id}")
+def departure_saved_shift_configuration_detail(config_id: str, db: Session = Depends(get_db)) -> dict:
+    return get_saved_shift_analysis_config(db, config_id)
+
+
+@app.delete("/api/v1/departure-intelligence/saved-shift-configurations/{config_id}")
+def departure_delete_saved_shift_configuration(config_id: str, db: Session = Depends(get_db)) -> dict:
+    return delete_saved_shift_analysis_config(db, config_id)
 
 
 @app.post("/api/v1/departure-intelligence/shift-analysis")
@@ -742,6 +879,31 @@ def spbu_pairing_available_dates(depot_id: str, db: Session = Depends(get_db)) -
     return build_pairing_date_availability(db, depot_id)
 
 
+@app.get("/api/v1/pairing-intelligence/saved-configurations")
+def spbu_pairing_saved_configurations(
+    depot_id: str | None = None,
+    limit: int = 10,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+) -> dict:
+    return list_saved_pairing_analysis_configs(db, depot_id=depot_id, limit=limit, offset=offset)
+
+
+@app.post("/api/v1/pairing-intelligence/saved-configurations")
+def spbu_pairing_save_configuration(request: SavePairingAnalysisConfigRequest, db: Session = Depends(get_db)) -> dict:
+    return save_pairing_analysis_config(db, request.model_dump())
+
+
+@app.get("/api/v1/pairing-intelligence/saved-configurations/{config_id}")
+def spbu_pairing_saved_configuration_detail(config_id: str, db: Session = Depends(get_db)) -> dict:
+    return get_saved_pairing_analysis_config(db, config_id)
+
+
+@app.delete("/api/v1/pairing-intelligence/saved-configurations/{config_id}")
+def spbu_pairing_delete_saved_configuration(config_id: str, db: Session = Depends(get_db)) -> dict:
+    return delete_saved_pairing_analysis_config(db, config_id)
+
+
 @app.get("/api/v1/affinity-intelligence/analysis")
 def spbu_mt_affinity_intelligence(
     depot_id: str,
@@ -780,6 +942,31 @@ def spbu_mt_affinity_intelligence(
 @app.get("/api/v1/affinity-intelligence/available-dates")
 def spbu_mt_affinity_available_dates(depot_id: str, db: Session = Depends(get_db)) -> dict:
     return build_affinity_date_availability(db, depot_id)
+
+
+@app.get("/api/v1/affinity-intelligence/saved-configurations")
+def spbu_mt_affinity_saved_configurations(
+    depot_id: str | None = None,
+    limit: int = 10,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+) -> dict:
+    return list_saved_affinity_analysis_configs(db, depot_id=depot_id, limit=limit, offset=offset)
+
+
+@app.post("/api/v1/affinity-intelligence/saved-configurations")
+def spbu_mt_affinity_save_configuration(request: SaveAffinityAnalysisConfigRequest, db: Session = Depends(get_db)) -> dict:
+    return save_affinity_analysis_config(db, request.model_dump())
+
+
+@app.get("/api/v1/affinity-intelligence/saved-configurations/{config_id}")
+def spbu_mt_affinity_saved_configuration_detail(config_id: str, db: Session = Depends(get_db)) -> dict:
+    return get_saved_affinity_analysis_config(db, config_id)
+
+
+@app.delete("/api/v1/affinity-intelligence/saved-configurations/{config_id}")
+def spbu_mt_affinity_delete_saved_configuration(config_id: str, db: Session = Depends(get_db)) -> dict:
+    return delete_saved_affinity_analysis_config(db, config_id)
 
 
 @app.get("/api/v1/master/compatibility/summary")
@@ -1151,6 +1338,8 @@ def crud_search_columns(domain: str) -> dict[str, object]:
             "vehicle_type_tag": MasterSPBU.vehicle_type_tag,
             "latitude": MasterSPBU.latitude,
             "longitude": MasterSPBU.longitude,
+            "official_window_start": MasterSPBU.official_window_start,
+            "official_window_end": MasterSPBU.official_window_end,
             "active_status": MasterSPBU.active_status,
         },
         "LOADING_ORDER": {
@@ -1174,6 +1363,8 @@ def crud_search_columns(domain: str) -> dict[str, object]:
             "longitude": MasterDepot.longitude,
             "region": MasterDepot.region,
             "timezone": MasterDepot.timezone,
+            "depot_operational_start": MasterDepot.depot_operational_start,
+            "depot_operational_end": MasterDepot.depot_operational_end,
             "active_status": MasterDepot.active_status,
         },
         "PRODUCT": {
@@ -1339,6 +1530,8 @@ def build_crud_record(domain: str, payload: dict):
             longitude=source_number(payload.get("longitude")),
             region=clean_str(payload.get("region")),
             timezone=clean_str(payload.get("timezone")) or "Asia/Jakarta",
+            depot_operational_start=source_time(payload.get("depot_operational_start"), time(0, 0)),
+            depot_operational_end=source_time(payload.get("depot_operational_end"), time(23, 59)),
             active_status=clean_str(payload.get("active_status")) or "ACTIVE",
         )
     if domain == "PRODUCT":
@@ -1399,6 +1592,8 @@ def build_crud_record(domain: str, payload: dict):
             project_tag_raw=clean_str(payload.get("project_tag_raw")),
             primary_depot_id=clean_str(payload.get("primary_depot_id")),
             active_status=clean_str(payload.get("active_status")) or "ACTIVE",
+            official_window_start=source_time(payload.get("official_window_start"), time(0, 0)),
+            official_window_end=source_time(payload.get("official_window_end"), time(23, 59)),
         )
     if domain == "LOADING_ORDER":
         source_depot_name = required_text(payload, "source_depot_name")
@@ -1423,12 +1618,12 @@ def build_crud_record(domain: str, payload: dict):
 
 def apply_crud_update(domain: str, record, payload: dict) -> None:
     allowed_fields = {
-        "DEPOT": ["depot_code", "depot_name", "latitude", "longitude", "region", "timezone", "active_status"],
+        "DEPOT": ["depot_code", "depot_name", "latitude", "longitude", "region", "timezone", "depot_operational_start", "depot_operational_end", "active_status"],
         "PRODUCT": ["product_name", "active_status"],
         "TAG_TYPE": ["code", "name", "description", "admin_editable"],
         "TAG": ["tag_type_id", "tag_value", "active_status"],
         "MOBIL_TANGKI": ["source_mt_id", "vehicle_name_raw", "vehicle_registration", "capacity_label", "vehicle_type_tag", "project_tag_raw", "number_of_compartments", "depot_id", "source_hub_id", "assignee", "active_status"],
-        "SPBU": ["spbu_code", "spbu_name", "address", "city", "latitude", "longitude", "source_coordinate", "master_distance_km", "master_travel_time_min", "vehicle_type_tag", "project_tag_raw", "primary_depot_id", "active_status"],
+        "SPBU": ["spbu_code", "spbu_name", "address", "city", "latitude", "longitude", "source_coordinate", "master_distance_km", "master_travel_time_min", "vehicle_type_tag", "project_tag_raw", "primary_depot_id", "official_window_start", "official_window_end", "active_status"],
         "LOADING_ORDER": ["shipment_id", "spbu_id", "spbu_mapping_status", "source_spbu_code", "shipto", "product_id", "source_product_name", "quantity", "status", "source_distance_km", "actual_km", "source_import_id"],
     }[domain]
     for field in allowed_fields:
@@ -1439,6 +1634,8 @@ def apply_crud_update(domain: str, record, payload: dict) -> None:
             value = source_number(value)
         elif field in {"number_of_compartments", "vehicle_type_tag"}:
             value = source_int(value)
+        elif field in {"official_window_start", "official_window_end", "depot_operational_start", "depot_operational_end"}:
+            value = source_time(value)
         elif field == "admin_editable":
             value = bool(value)
         else:
@@ -1947,6 +2144,8 @@ def build_spbu_export(db: Session, depot: MasterDepot) -> tuple[str, list[str], 
         "master_distance_km",
         "master_travel_time_min",
         "vehicle_type_tag",
+        "official_window_start",
+        "official_window_end",
         "active_status",
         "project_tags",
         "source_import_id",
@@ -1967,6 +2166,8 @@ def build_spbu_export(db: Session, depot: MasterDepot) -> tuple[str, list[str], 
             spbu.master_distance_km,
             spbu.master_travel_time_min,
             spbu.vehicle_type_tag,
+            spbu.official_window_start,
+            spbu.official_window_end,
             spbu.active_status,
             tag_lookup.get(spbu.spbu_id, ""),
             spbu.source_import_id,

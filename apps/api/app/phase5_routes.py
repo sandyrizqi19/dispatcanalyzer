@@ -13,10 +13,14 @@ from .models import MLBehavioralModel
 from .phase5_auth import Phase5Actor, require_phase5_permission
 from .phase5_behavioral import get_training_run, prepare_training_dataset, train_behavioral_model
 from .phase5_concentration import (
+    delete_saved_concentration_analysis,
     get_concentration_profile,
     get_concentration_run,
+    get_saved_concentration_analysis,
     list_concentration_runs,
+    list_saved_concentration_analyses,
     run_concentration_analysis,
+    save_concentration_analysis,
 )
 from .phase5_readiness import build_phase5_readiness
 from .phase5_registry import (
@@ -41,12 +45,21 @@ class ConcentrationAnalysisRequest(BaseModel):
     parameters: dict[str, Any] = Field(default_factory=dict)
 
 
+class SaveConcentrationAnalysisRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    analysis_run_id: str
+    ui_state: dict[str, Any] = Field(default_factory=dict)
+
+
 class PrepareDatasetRequest(BaseModel):
     depot_id: str
     training_start_date: date
     training_end_date: date
     minimum_shipment_observation: int = Field(default=10, ge=1)
     shift_definitions: list[dict[str, Any]] = Field(default_factory=list)
+    data_sufficiency_configuration: dict[str, Any] = Field(default_factory=dict)
+    geographic_configuration: dict[str, Any] = Field(default_factory=dict)
+    feature_weights: dict[str, Any] = Field(default_factory=dict)
 
 
 class TrainModelRequest(BaseModel):
@@ -121,6 +134,50 @@ def concentration_spbu_detail(
     return get_concentration_profile(db, analysis_run_id, spbu_id)
 
 
+@router.get("/engine-a/saved-analyses")
+def saved_concentration_analyses(
+    depot_id: str | None = None,
+    limit: int = 10,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    _actor: Phase5Actor = Depends(require_phase5_permission("view")),
+) -> dict:
+    return list_saved_concentration_analyses(db, depot_id=depot_id, limit=limit, offset=offset)
+
+
+@router.post("/engine-a/saved-analyses")
+def save_concentration(
+    request: SaveConcentrationAnalysisRequest,
+    db: Session = Depends(get_db),
+    actor: Phase5Actor = Depends(require_phase5_permission("save")),
+) -> dict:
+    return save_concentration_analysis(
+        db,
+        name=request.name,
+        analysis_run_id=request.analysis_run_id,
+        ui_state=request.ui_state,
+        created_by=actor.user_id,
+    )
+
+
+@router.get("/engine-a/saved-analyses/{saved_analysis_id}")
+def saved_concentration_analysis(
+    saved_analysis_id: str,
+    db: Session = Depends(get_db),
+    _actor: Phase5Actor = Depends(require_phase5_permission("view")),
+) -> dict:
+    return get_saved_concentration_analysis(db, saved_analysis_id)
+
+
+@router.delete("/engine-a/saved-analyses/{saved_analysis_id}")
+def delete_saved_concentration(
+    saved_analysis_id: str,
+    db: Session = Depends(get_db),
+    _actor: Phase5Actor = Depends(require_phase5_permission("delete")),
+) -> dict:
+    return delete_saved_concentration_analysis(db, saved_analysis_id)
+
+
 @router.post("/engine-b/prepare-dataset")
 def prepare_dataset(
     request: PrepareDatasetRequest,
@@ -135,6 +192,9 @@ def prepare_dataset(
         minimum_shipment_observation=request.minimum_shipment_observation,
         shift_definitions=request.shift_definitions or None,
         created_by=actor.user_id,
+        data_sufficiency_configuration=request.data_sufficiency_configuration or None,
+        geographic_configuration=request.geographic_configuration or None,
+        feature_weights=request.feature_weights or None,
     )
 
 

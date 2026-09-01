@@ -14,7 +14,13 @@ Phase 5: operational cluster intelligence.
 
 Phase 6: time-aware shipment prediction, rolling multi-trip MT assignment, and estimated availability.
 
-The repository includes read-only Phase 2–4 intelligence, persisted Phase 5 ML workflows, and Phase 6 inference/assignment/availability estimation. Phase 6 may estimate a preliminary small-stop sequence for cycle time, but no phase through Phase 6 performs fleet-wide route optimization or VRP.
+Phase 7: dynamic fleet-wide multi-trip VRP, depot bay queue scheduling, rolling reroute, and immutable operational route versions.
+
+Phase 8: manual dispatch adjustment, per-trip constraint validation and route recalculation, cascading fleet availability, operational simulation, dashboard, audit, versioning, and final dispatch.
+
+Phase 9: neutral Route–Model Alignment Evaluation against source-aligned cluster, shift, SPBU pairing, and MT affinity evidence.
+
+The repository includes read-only Phase 2–4 intelligence, persisted Phase 5 ML workflows, Phase 6 inference/assignment/availability estimation, Phase 7 OR-Tools optimization/control, Phase 8 human-in-the-loop dispatch finalization, and Phase 9 descriptive alignment evaluation. Phase 6 may estimate a preliminary small-stop sequence for cycle time; Phase 7 owns fleet-wide route optimization and depot bay scheduling; Phase 8 owns manual adjustment, per-trip recalculation, simulation, audit, and the finalized dispatch version; Phase 9 never changes those sources.
 
 ## Phase 2
 
@@ -93,3 +99,67 @@ The repository includes read-only Phase 2–4 intelligence, persisted Phase 5 ML
 - Algorithm: `phase6.iterative_exact_capacity_assignment.v9` using `CAPACITY_TIME_ROUTE_SET_PACKING` within each capacity tier
 - Security: encrypted API key using environment-provided encryption secret; browser receives masked value only
 - Phase 7 boundary: Phase 6 never calls Google Route Optimization/GMPRO `optimizeTours` and never solves fleet-wide VRP; Phase 7 owns final globally optimized route and constraints
+
+## Phase 7
+
+- API prefix: `/api/v1/phase7`
+- UI: `/phase7-optimization`
+- Job scope: one depot + one operating date + one explicitly selected completed Phase 6 Prediction Run
+- Source boundary: original Phase 6 prediction fields are immutable warm-start/soft-preference evidence; current Phase 7 assignment is stored separately
+- Engine A: Google OR-Tools Routing Solver with a physical-vehicle multi-trip loop
+- Compartment engine: CP-SAT LO-to-compartment assignment with one product per compartment
+- Engine B: deterministic `FIFO_BALANCED` bay eligibility, actual occupancy/queue, balanced loading, and gate-out schedule; CP-SAT remains opt-in
+- Google role: prebuilt distance/time matrix, cache, final selected-leg geometry, and map display only; Google is never called from a solver callback
+- Hard compatibility: Phase 1 vehicle-class limit, canonical tag subset, depot, capacity, compartments, availability, working time, SPBU window, frozen assignment, and bay products
+- Soft evidence: Phase 3 pairing, Phase 4 MT affinity, Phase 6 vehicle/grouping, and previous-plan stability penalties
+- Reroute: current Route Version seeds the next version; copy DONE, retain ONGOING with actual return ETA, lock on-time near-term MT/sequence with recalculated time, and release late/unavailable future work; never rerun Phase 6 automatically
+- Operational UI: LO System ETA resolves the current trip's return-to-depot time; MT Delivery Status is derived from assigned LO state with `ONGOING > DONE > PLANNED`; Comparison audits Phase 6 against V1/V2/... or two Route Versions per LO, MT, gate-out, and ETA Depot
+- Versioning: every optimization appends V1/V2/... plus state snapshot, parameter snapshot/checksum, solver metadata, cost, dropped reason, and comparison
+- End of day: all-DONE closes the Job without a new version; remaining LO at depot close is explicit `UNSERVED_END_OF_DAY`
+- Schema: migration `0019_phase7_dynamic_vrp`
+- Algorithm: `phase7.dynamic_multitrip_vrp_bay.v6` (`FIFO_BALANCED`, per-trip candidate-audited post-bay repair, current Route Version reroute seed, and actual-state-aware future-trip release)
+- Technical documentation: `docs/PHASE_7_DYNAMIC_VRP.md`
+
+## Phase 8
+
+- API prefix: `/api/v1/phase8/manual-dispatch`
+- UI: `/phase-8/manual-dispatch` and `/phase-8/manual-dispatch/:jobId?tab=...`
+- Source: immutable snapshot of Phase 6 warm start or any dynamically discovered Phase 7 Route Version
+- Boundary: manual editing and per-trip recalculation only; no global VRP reoptimization and no mutation of Phase 6/7 records
+- Hierarchy: `MT → Trip → Loading Order`, with relational Unassigned LO scope
+- Eligibility: canonical `compatibility.evaluate_mt_spbu_compatibility`, depot/active/scope/uniqueness/capacity/compartment guardrails
+- Apply: validation → Google Routes legs → service time → return/turnaround → availability → downstream invalidation
+- Simulation: 15/30/60-minute server aggregates of gate-out KL, available fleet KL, capacity gap, and MT movement Gantt
+- Dashboard: hourly/cumulative KL, saved shift/cluster distributions, separate time/volume utilization metrics, and remaining demand
+- Geographic Map: search/select one MT and render all of its trips with stored or live Google Routes road geometry without mutating the dispatch snapshot
+- Versioning: finalized versions are immutable; new versions are deep-copy working snapshots with parent lineage
+- Finalization: hard errors block; unassigned LO is an explicit acknowledgment warning by default
+- Schema: migration `0022_phase8_manual_dispatch`
+- Technical documentation: `docs/PHASE_8_MANUAL_DISPATCH.md`
+
+## Phase 9
+
+- API prefix: `/api/v1/phase9/route-model-alignment`
+- UI: `/phase9/route-model-alignment`
+- Inputs: one TBBM and one persisted Phase 7 Route Version; model and saved-analysis lineage are never selected manually
+- Source bundle: exact Phase 5 model/training lineage for cluster, shift, and pairing; deterministic exact/as-of/rebuilt Phase 4 evidence for MT affinity
+- Historical cutoff: source model and all fallback evidence must end before the route operating date
+- Metrics: separate `Cluster Cohesion`, `Shift Alignment`, `Historical SPBU Pairing`, and `Historical MT Affinity`; no composite overall score
+- Semantics: `0–100%` describes historical alignment only; no good/bad/pass/fail classification
+- Observation: dashboard deduplicates unique trip–SPBU and canonical in-trip SPBU pairs, while the table persists every LO including dropped/unassigned LO
+- Evidence: nullable scores, status/reason, coverage, immutable Source-Aligned Bundle/checksum, per-trip matrix, and per-LO evidence drawer
+- Tables: Trip Alignment Matrix dan detail LO memiliki server-side pagination, column sorting, deterministic search, serta state kontrol yang independen; matriks menampilkan daftar No. LO dan No. SPBU per trip
+- Persistence: `route_alignment_evaluation_run`, `route_alignment_evaluation_row`, `route_alignment_pair_evidence`
+- Schema: migration `0027_phase9_route_alignment`
+- Algorithm: `phase9.route_model_alignment.v1`
+- Technical documentation: `docs/PHASE_9_ROUTE_MODEL_ALIGNMENT.md`
+
+## Phase 7 → Phase 8 operational handoff
+
+1. Phase 7 persists an immutable Route Version (`V1`, `V2`, and later versions) while the Job points to the current operational version.
+2. The dispatcher opens Phase 8 and selects depot, operational date, Phase 7 Job, and one dynamically discovered source route. Phase 6 Warm Start remains selectable through the same Phase 7 lineage.
+3. `Create & Load` copies the selected MT, trip, LO scope/assignment, route metadata, cluster, shift, tags, configuration, and source lineage into a separate Manual Dispatch Job.
+4. Manual edits affect only Phase 8. Apply recalculates one trip and cascades availability invalidation only along that MT's later trips; no fleet-wide solver runs.
+5. Simulation and Dashboard read the same current Phase 8 state. Finalization produces a read-only Dispatch Version; subsequent edits require a child version.
+
+This handoff is intentionally one-way. Phase 8 never writes assignments, timestamps, statuses, or current-version pointers back to Phase 6 or Phase 7.
