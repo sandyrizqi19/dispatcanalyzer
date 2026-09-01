@@ -247,6 +247,8 @@ class GoogleRoutesClient:
                 return response.json()
             try:
                 error_payload = response.json()
+                logger.error("GOOGLE API ERROR RESPONSE: %s", error_payload)
+                print(f"GOOGLE API ERROR RESPONSE: {error_payload}", flush=True)
                 safe_message = str(error_payload.get("error", {}).get("message") or "Google Routes request failed.")
                 status = str(error_payload.get("error", {}).get("status") or "")
             except Exception:
