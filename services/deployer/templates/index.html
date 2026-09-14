@@ -1,0 +1,905 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>System Deployment & Upstream Sync Manager · Elnusa Petrofin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --petrofin-blue: #0b73bf;
+      --petrofin-blue-hover: #095c99;
+      --petrofin-lime: #b8d211;
+      --petrofin-ink: #0f1e36;
+      --petrofin-navy: #15385b;
+      --petrofin-red: #ea4a43;
+      --petrofin-green: #10b981;
+      --bg-gradient: radial-gradient(circle at 10% 20%, rgba(11, 115, 191, 0.08) 0%, rgba(245, 248, 252, 0.98) 90%);
+      --card-bg: #ffffff;
+      --border-color: #e2e8f0;
+      --text-muted: #64748b;
+      --terminal-bg: #0b0f19;
+      --terminal-border: #1e293b;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background: var(--bg-gradient);
+      color: var(--petrofin-ink);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      background: #ffffff;
+      border-bottom: 1px solid var(--border-color);
+      padding: 1rem 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .brand-row {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .brand-mark {
+      width: 42px;
+      height: 42px;
+      background: linear-gradient(135deg, var(--petrofin-blue), #034b82);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-weight: 800;
+      font-size: 1.25rem;
+      box-shadow: 0 4px 10px rgba(11, 115, 191, 0.3);
+    }
+
+    .brand-text h1 {
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: var(--petrofin-ink);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .brand-text p {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .tag-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.2rem 0.6rem;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      background: #e0f2fe;
+      color: var(--petrofin-blue);
+      border: 1px solid #bae6fd;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .btn-secondary {
+      padding: 0.55rem 1rem;
+      border: 1px solid var(--border-color);
+      background: #ffffff;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--petrofin-ink);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      text-decoration: none;
+      transition: all 0.2s;
+    }
+
+    .btn-secondary:hover {
+      background: #f8fafc;
+      border-color: #cbd5e1;
+    }
+
+    .container {
+      max-width: 1280px;
+      margin: 1.5rem auto;
+      padding: 0 1.5rem;
+      flex: 1;
+      width: 100%;
+    }
+
+    /* Grid Layout */
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      gap: 1.5rem;
+    }
+
+    @media (max-width: 1024px) {
+      .dashboard-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* Cards */
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 1.25rem;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.02);
+      margin-bottom: 1.5rem;
+    }
+
+    .card-title {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: var(--petrofin-navy);
+      margin-bottom: 1rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    /* Info pills */
+    .info-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    .info-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.825rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid #f1f5f9;
+    }
+
+    .info-label {
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+
+    .info-val {
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 600;
+      color: var(--petrofin-ink);
+      background: #f8fafc;
+      padding: 0.15rem 0.5rem;
+      border-radius: 4px;
+      border: 1px solid #e2e8f0;
+      font-size: 0.775rem;
+      max-width: 180px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* Deploy Trigger Button */
+    .btn-deploy {
+      width: 100%;
+      padding: 0.85rem 1.25rem;
+      background: linear-gradient(135deg, var(--petrofin-blue) 0%, #035392 100%);
+      color: white;
+      border: none;
+      border-radius: 10px;
+      font-weight: 700;
+      font-size: 0.95rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.6rem;
+      box-shadow: 0 4px 14px rgba(11, 115, 191, 0.35);
+      transition: all 0.2s;
+    }
+
+    .btn-deploy:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 20px rgba(11, 115, 191, 0.45);
+    }
+
+    .btn-deploy:disabled {
+      background: #94a3b8;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+
+    /* Stepper */
+    .stepper {
+      display: flex;
+      flex-direction: column;
+      gap: 0.85rem;
+      margin-top: 1rem;
+    }
+
+    .step-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.85rem;
+      padding: 0.75rem;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      background: #fafbfc;
+      transition: all 0.2s;
+    }
+
+    .step-item.is-running {
+      background: #eff6ff;
+      border-color: #bfdbfe;
+      animation: pulseBorder 2s infinite ease-in-out;
+    }
+
+    .step-item.is-success {
+      background: #f0fdf4;
+      border-color: #bbf7d0;
+    }
+
+    .step-item.is-error {
+      background: #fef2f2;
+      border-color: #fecaca;
+    }
+
+    @keyframes pulseBorder {
+      0% { border-color: #bfdbfe; }
+      50% { border-color: var(--petrofin-blue); }
+      100% { border-color: #bfdbfe; }
+    }
+
+    .step-icon {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: #e2e8f0;
+      color: #64748b;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.75rem;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    .step-item.is-running .step-icon {
+      background: var(--petrofin-blue);
+      color: white;
+      animation: spin 1.5s linear infinite;
+    }
+
+    .step-item.is-success .step-icon {
+      background: var(--petrofin-green);
+      color: white;
+    }
+
+    .step-item.is-error .step-icon {
+      background: var(--petrofin-red);
+      color: white;
+    }
+
+    @keyframes spin {
+      100% { transform: rotate(360deg); }
+    }
+
+    .step-content h4 {
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: var(--petrofin-ink);
+    }
+
+    .step-content p {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-top: 0.15rem;
+    }
+
+    /* Terminal Console */
+    .terminal-panel {
+      background: var(--terminal-bg);
+      border: 1px solid var(--terminal-border);
+      border-radius: 12px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+      display: flex;
+      flex-direction: column;
+      height: 650px;
+      overflow: hidden;
+    }
+
+    .terminal-header {
+      background: #111827;
+      padding: 0.75rem 1.25rem;
+      border-bottom: 1px solid #1f2937;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .terminal-dots {
+      display: flex;
+      gap: 0.4rem;
+    }
+
+    .dot {
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+    }
+    .dot.red { background: #ef4444; }
+    .dot.yellow { background: #f59e0b; }
+    .dot.green { background: #10b981; }
+
+    .terminal-title {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.775rem;
+      color: #9ca3af;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .terminal-controls {
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    .btn-term {
+      background: #1f2937;
+      color: #d1d5db;
+      border: 1px solid #374151;
+      padding: 0.3rem 0.65rem;
+      border-radius: 6px;
+      font-size: 0.725rem;
+      cursor: pointer;
+      font-family: 'JetBrains Mono', monospace;
+      transition: all 0.15s;
+    }
+
+    .btn-term:hover {
+      background: #374151;
+      color: #ffffff;
+    }
+
+    .terminal-body {
+      flex: 1;
+      padding: 1rem;
+      overflow-y: auto;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+      line-height: 1.55;
+      color: #e5e7eb;
+      scroll-behavior: smooth;
+    }
+
+    .log-line {
+      display: flex;
+      gap: 0.75rem;
+      margin-bottom: 0.2rem;
+      word-break: break-all;
+    }
+
+    .log-time {
+      color: #6b7280;
+      flex-shrink: 0;
+      user-select: none;
+    }
+
+    .log-msg.info { color: #d1d5db; }
+    .log-msg.cmd { color: #38bdf8; font-weight: 600; }
+    .log-msg.success { color: #34d399; font-weight: 600; }
+    .log-msg.warning { color: #fbbf24; }
+    .log-msg.error { color: #f87171; font-weight: 600; }
+
+    /* Success Alert Banner */
+    .success-banner {
+      display: none;
+      background: linear-gradient(135deg, #065f46 0%, #047857 100%);
+      color: white;
+      border-radius: 12px;
+      padding: 1.25rem 1.75rem;
+      margin-bottom: 1.5rem;
+      box-shadow: 0 8px 20px rgba(6, 95, 70, 0.25);
+      align-items: center;
+      justify-content: space-between;
+      animation: fadeIn 0.4s ease-out;
+    }
+
+    .success-banner.is-visible {
+      display: flex;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .banner-title {
+      font-size: 1.05rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+    }
+
+    .banner-desc {
+      font-size: 0.85rem;
+      opacity: 0.9;
+      margin-top: 0.2rem;
+    }
+
+    .btn-open-app {
+      background: #ffffff;
+      color: #065f46;
+      font-weight: 700;
+      padding: 0.7rem 1.4rem;
+      border-radius: 8px;
+      text-decoration: none;
+      font-size: 0.875rem;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.15);
+      transition: all 0.2s;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .btn-open-app:hover {
+      background: #ecfdf5;
+      transform: scale(1.02);
+    }
+
+    /* Modal Confirmation */
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.65);
+      backdrop-filter: blur(4px);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .modal-backdrop.is-open {
+      display: flex;
+    }
+
+    .modal-card {
+      background: #ffffff;
+      border-radius: 14px;
+      max-width: 480px;
+      width: 90%;
+      padding: 1.75rem;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.2);
+    }
+
+    .modal-card h3 {
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: var(--petrofin-ink);
+      margin-bottom: 0.75rem;
+    }
+
+    .modal-card p {
+      font-size: 0.875rem;
+      color: #475569;
+      line-height: 1.5;
+      margin-bottom: 1.25rem;
+    }
+
+    .modal-card ul {
+      margin-left: 1.25rem;
+      font-size: 0.825rem;
+      color: #334155;
+      margin-bottom: 1.25rem;
+    }
+
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.75rem;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand-row">
+      <div class="brand-mark">P</div>
+      <div class="brand-text">
+        <h1>
+          Deployment Manager
+          <span class="tag-badge">Decoupled Architecture</span>
+        </h1>
+        <p>Elnusa Petrofin · Automated One-Click Sync & Re-deploy</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <a href="http://localhost:3000" id="mainAppBtn" target="_blank" class="btn-secondary">
+        Buka Aplikasi Utama (Port 3000) ↗
+      </a>
+    </div>
+  </header>
+
+  <div class="container">
+
+    <!-- Success Celebration Banner -->
+    <div class="success-banner" id="successBanner">
+      <div>
+        <div class="banner-title">
+          <span>🎉 Deployment Berhasil 100%!</span>
+        </div>
+        <div class="banner-desc" id="successDesc">
+          Seluruh layanan aplikasi telah disinkronkan dan aktif kembali.
+        </div>
+      </div>
+      <a href="http://localhost:3000" id="bannerAppBtn" target="_blank" class="btn-open-app">
+        Buka Aplikasi Utama ↗
+      </a>
+    </div>
+
+    <div class="dashboard-grid">
+
+      <!-- Left Sidebar Controls -->
+      <aside>
+        <!-- Action Card -->
+        <div class="card">
+          <div class="card-title">
+            <span>Kontrol Deployment</span>
+            <span id="badgeStatus" class="tag-badge" style="background:#f1f5f9; color:#475569;">IDLE</span>
+          </div>
+
+          <button id="btnTrigger" class="btn-deploy" onclick="openDeployModal()">
+            <span>🚀 Jalankan Sync & Deploy</span>
+          </button>
+
+          <div style="margin-top: 1rem; font-size: 0.8rem; color: var(--text-muted);">
+            <label style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.4rem; cursor:pointer;">
+              <input type="checkbox" id="chkPreBuild" checked />
+              <span>Safe Pre-build (Cegah UI mati saat compile)</span>
+            </label>
+            <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer;">
+              <input type="checkbox" id="chkSkipDocker" />
+              <span>Dry-run / Skip Docker (Hanya Git sync)</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Repository Info Card -->
+        <div class="card">
+          <div class="card-title">
+            <span>Informasi Repository</span>
+          </div>
+          <div class="info-list">
+            <div class="info-item">
+              <span class="info-label">Branch</span>
+              <span class="info-val">main</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">Upstream</span>
+              <span class="info-val" title="https://github.com/ferdeh/dispatcanalyzer.git">ferdeh/dispatcanalyzer</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">Origin (Fork)</span>
+              <span class="info-val" title="https://github.com/sandyrizqi19/dispatcanalyzer.git">sandyrizqi19/dispatcanalyzer</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">Status Server</span>
+              <span class="info-val" id="serverPing" style="color:var(--petrofin-green);">ONLINE</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Progress Stepper Card -->
+        <div class="card">
+          <div class="card-title">
+            <span>Tahapan Pipeline</span>
+          </div>
+          <div class="stepper" id="stepperContainer">
+            <!-- Rendered by JS -->
+          </div>
+        </div>
+      </aside>
+
+      <!-- Right Main: Live Terminal -->
+      <main>
+        <div class="terminal-panel">
+          <div class="terminal-header">
+            <div class="terminal-dots">
+              <div class="dot red"></div>
+              <div class="dot yellow"></div>
+              <div class="dot green"></div>
+            </div>
+            <div class="terminal-title">
+              <span>● live-stream · deploy.log</span>
+            </div>
+            <div class="terminal-controls">
+              <button class="btn-term" onclick="toggleAutoScroll()" id="btnAutoScroll">Autoscroll: ON</button>
+              <button class="btn-term" onclick="copyLogs()">Salin Log</button>
+              <button class="btn-term" onclick="clearLogs()">Bersihkan</button>
+            </div>
+          </div>
+
+          <div class="terminal-body" id="terminalBody">
+            <div class="log-line">
+              <span class="log-time">[READY]</span>
+              <span class="log-msg info">System Deployment Manager aktif dan siap menerima perintah.</span>
+            </div>
+            <div class="log-line">
+              <span class="log-time">[READY]</span>
+              <span class="log-msg info">Koneksi Server-Sent Events (SSE) tersambung ke endpoint live stream.</span>
+            </div>
+          </div>
+        </div>
+      </main>
+
+    </div>
+  </div>
+
+  <!-- Confirmation Modal -->
+  <div class="modal-backdrop" id="modalDeploy">
+    <div class="modal-card">
+      <h3>Konfirmasi Deployment</h3>
+      <p>Sistem akan menjalankan rangkaian proses otomatis berikut secara berurutan:</p>
+      <ul>
+        <li>1. Sync fork dari remote <strong>upstream</strong> (`ferdeh/dispatcanalyzer`)</li>
+        <li>2. Checkout `main`, merge commit upstream, dan push ke <strong>origin</strong> (`sandyrizqi19/dispatcanalyzer`)</li>
+        <li>3. Verifikasi dengan <code>git pull origin main</code></li>
+        <li>4. Build image Docker baru lalu restart container aplikasi</li>
+        <li>5. Verifikasi respon API hingga sistem sehat kembali</li>
+      </ul>
+      <div class="modal-actions">
+        <button class="btn-secondary" onclick="closeDeployModal()">Batal</button>
+        <button class="btn-deploy" style="width:auto; padding:0.6rem 1.25rem;" onclick="confirmStartDeploy()">
+          Ya, Mulai Deploy Sekarang
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Global State
+    let autoScroll = true;
+    let eventSource = null;
+    const stagesDef = [
+      { id: 1, title: "1. Pre-flight Check", desc: "Validasi git repo & environment" },
+      { id: 2, title: "2. Sync Upstream", desc: "Fetch commit terbaru dari upstream" },
+      { id: 3, title: "3. Merge & Push Fork", desc: "Merge upstream/main & push ke origin" },
+      { id: 4, title: "4. Pull Origin", desc: "Verifikasi tracking branch lokal" },
+      { id: 5, title: "5. Docker Safe Build & Restart", desc: "Build image baru & restart container" },
+      { id: 6, title: "6. Health Check Verification", desc: "Validasi API dan Web responsif" }
+    ];
+
+    // Initialize Stepper
+    function initStepper() {
+      const container = document.getElementById("stepperContainer");
+      container.innerHTML = "";
+      stagesDef.forEach(st => {
+        const item = document.createElement("div");
+        item.className = "step-item";
+        item.id = `step-item-${st.id}`;
+        item.innerHTML = `
+          <div class="step-icon" id="step-icon-${st.id}">${st.id}</div>
+          <div class="step-content">
+            <h4>${st.title}</h4>
+            <p>${st.desc}</p>
+          </div>
+        `;
+        container.appendChild(item);
+      });
+    }
+
+    function updateStepUI(stepId, status) {
+      const item = document.getElementById(`step-item-${stepId}`);
+      const icon = document.getElementById(`step-icon-${stepId}`);
+      if (!item || !icon) return;
+
+      item.className = "step-item";
+      if (status === "running") {
+        item.classList.add("is-running");
+        icon.innerHTML = "⟳";
+      } else if (status === "success") {
+        item.classList.add("is-success");
+        icon.innerHTML = "✓";
+      } else if (status === "error") {
+        item.classList.add("is-error");
+        icon.innerHTML = "✕";
+      } else {
+        icon.innerHTML = stepId;
+      }
+    }
+
+    function appendLog(time, msg, level = "info") {
+      const body = document.getElementById("terminalBody");
+      const line = document.createElement("div");
+      line.className = "log-line";
+      line.innerHTML = `
+        <span class="log-time">[${time}]</span>
+        <span class="log-msg ${level}">${escapeHtml(msg)}</span>
+      `;
+      body.appendChild(line);
+
+      if (autoScroll) {
+        body.scrollTop = body.scrollHeight;
+      }
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.innerText = text;
+      return div.innerHTML;
+    }
+
+    function toggleAutoScroll() {
+      autoScroll = !autoScroll;
+      document.getElementById("btnAutoScroll").innerText = `Autoscroll: ${autoScroll ? "ON" : "OFF"}`;
+    }
+
+    function clearLogs() {
+      document.getElementById("terminalBody").innerHTML = "";
+    }
+
+    function copyLogs() {
+      const lines = Array.from(document.querySelectorAll("#terminalBody .log-line"))
+        .map(el => el.innerText)
+        .join("\n");
+      navigator.clipboard.writeText(lines).then(() => {
+        alert("Seluruh log berhasil disalin ke clipboard!");
+      });
+    }
+
+    // Modal Control
+    function openDeployModal() {
+      document.getElementById("modalDeploy").classList.add("is-open");
+    }
+
+    function closeDeployModal() {
+      document.getElementById("modalDeploy").classList.remove("is-open");
+    }
+
+    // Connect SSE Stream
+    function connectSSE() {
+      if (eventSource) eventSource.close();
+
+      eventSource = new EventSource("/api/deploy/stream");
+
+      eventSource.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          handleStreamEvent(payload);
+        } catch (e) {
+          console.error("SSE parse error", e);
+        }
+      };
+
+      eventSource.onerror = () => {
+        // SSE automatic reconnect
+        document.getElementById("serverPing").innerText = "RECONNECTING";
+        document.getElementById("serverPing").style.color = "var(--petrofin-red)";
+      };
+
+      eventSource.onopen = () => {
+        document.getElementById("serverPing").innerText = "ONLINE";
+        document.getElementById("serverPing").style.color = "var(--petrofin-green)";
+      };
+    }
+
+    function handleStreamEvent(data) {
+      if (data.type === "log") {
+        const item = data.data;
+        appendLog(item.timestamp, item.message, item.level);
+      } else if (data.type === "stage") {
+        updateStepUI(data.stage, data.status);
+      } else if (data.type === "pipeline_start") {
+        document.getElementById("btnTrigger").disabled = true;
+        document.getElementById("btnTrigger").innerText = "⏳ Sedang Menjalankan Pipeline...";
+        document.getElementById("badgeStatus").innerText = "RUNNING";
+        document.getElementById("badgeStatus").style.background = "#eff6ff";
+        document.getElementById("badgeStatus").style.color = "var(--petrofin-blue)";
+        document.getElementById("successBanner").classList.remove("is-visible");
+      } else if (data.type === "pipeline_complete") {
+        document.getElementById("btnTrigger").disabled = false;
+        document.getElementById("btnTrigger").innerText = "🚀 Jalankan Sync & Deploy";
+
+        if (data.status === "success") {
+          document.getElementById("badgeStatus").innerText = "SUCCESS";
+          document.getElementById("badgeStatus").style.background = "#f0fdf4";
+          document.getElementById("badgeStatus").style.color = "var(--petrofin-green)";
+
+          const banner = document.getElementById("successBanner");
+          const dur = data.data ? data.data.duration_seconds : "";
+          document.getElementById("successDesc").innerText = `Deployment selesai sempurna dalam ${dur} detik. Seluruh layanan aplikasi telah aktif kembali.`;
+          banner.classList.add("is-visible");
+        } else {
+          document.getElementById("badgeStatus").innerText = "ERROR";
+          document.getElementById("badgeStatus").style.background = "#fef2f2";
+          document.getElementById("badgeStatus").style.color = "var(--petrofin-red)";
+        }
+      }
+    }
+
+    // Trigger API Deploy
+    async function confirmStartDeploy() {
+      closeDeployModal();
+      const preBuild = document.getElementById("chkPreBuild").checked;
+      const skipDocker = document.getElementById("chkSkipDocker").checked;
+
+      // Reset UI steps
+      stagesDef.forEach(s => updateStepUI(s.id, "idle"));
+
+      try {
+        const resp = await fetch("/api/deploy/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            pre_build_first: preBuild,
+            skip_docker: skipDocker
+          })
+        });
+        const result = await resp.json();
+        if (!resp.ok) {
+          alert("Gagal memulai deployment: " + (result.detail || "Error tidak dikenal"));
+        }
+      } catch (err) {
+        alert("Gagal menghubungi server deployer: " + err.message);
+      }
+    }
+
+    // Fetch initial status
+    async function checkInitialStatus() {
+      try {
+        const resp = await fetch("/api/deploy/status");
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data.is_running) {
+            document.getElementById("btnTrigger").disabled = true;
+            document.getElementById("btnTrigger").innerText = "⏳ Sedang Menjalankan Pipeline...";
+            document.getElementById("badgeStatus").innerText = "RUNNING";
+            updateStepUI(data.current_stage, "running");
+          }
+        }
+      } catch (e) {
+        console.warn("Deployer status offline", e);
+      }
+    }
+
+    // Setup on page load
+    window.addEventListener("DOMContentLoaded", () => {
+      // Adjust main app link host based on current browser URL
+      const currentHost = window.location.hostname;
+      const mainUrl = `http://${currentHost}:3000`;
+      document.getElementById("mainAppBtn").href = mainUrl;
+      document.getElementById("bannerAppBtn").href = mainUrl;
+
+      initStepper();
+      connectSSE();
+      checkInitialStatus();
+    });
+  </script>
+</body>
+</html>

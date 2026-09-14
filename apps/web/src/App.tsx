@@ -13,6 +13,7 @@ import { DocumentationPage } from "./components/DocumentationPage";
 import { Phase7OptimizationPage } from "./components/Phase7OptimizationPage";
 import { ManualDispatchPage } from "./components/ManualDispatchPage";
 import { RouteModelAlignmentPage } from "./components/RouteModelAlignmentPage";
+import { SystemDeploymentPage } from "./components/SystemDeploymentPage";
 
 type Overview = Record<string, number>;
 type Charts = Record<string, SeriesPoint[]>;
@@ -143,6 +144,11 @@ const pageMetadata: Record<Page, { eyebrow: string; title: string; description: 
     eyebrow: "Settings",
     title: "Google Maps Integration",
     description: "Secure DRIVE-only route estimation, cache, fallback, and cycle-time settings.",
+  },
+  "system-deployment": {
+    eyebrow: "Settings",
+    title: "System Deployment & Sync",
+    description: "Automated upstream synchronization, fork merge, and safe container deployment.",
   },
   documentation: {
     eyebrow: "Support",
@@ -877,6 +883,7 @@ function pageFromPath(pathname: string): Page {
   if (pathname === "/phase-8/manual-dispatch" || pathname.startsWith("/phase-8/manual-dispatch/")) return "manual-dispatch";
   if (pathname === "/phase9/route-model-alignment") return "route-model-alignment";
   if (pathname === "/settings/google-maps-integration") return "google-maps-integration";
+  if (pathname === "/settings/system-deployment") return "system-deployment";
   if (pathname === "/documentation") return "documentation";
   return "dashboard";
 }
@@ -2682,6 +2689,8 @@ function App() {
                       ? "/phase9/route-model-alignment"
                     : page === "google-maps-integration"
                       ? "/settings/google-maps-integration"
+                    : page === "system-deployment"
+                      ? "/settings/system-deployment"
                       : page === "documentation"
                         ? "/documentation"
               : "/";
@@ -2972,6 +2981,10 @@ function App() {
 
         {currentPage === "google-maps-integration" && (
           <GoogleMapsIntegrationPage />
+        )}
+
+        {currentPage === "system-deployment" && (
+          <SystemDeploymentPage />
         )}
 
         {currentPage === "documentation" && (

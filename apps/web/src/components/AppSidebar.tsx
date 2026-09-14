@@ -14,6 +14,7 @@ import {
   Sparkles,
   Tags,
   Truck,
+  RefreshCw,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -31,6 +32,7 @@ export type AppPage =
   | "manual-dispatch"
   | "route-model-alignment"
   | "google-maps-integration"
+  | "system-deployment"
   | "documentation";
 
 type NavItem = {
@@ -84,6 +86,7 @@ const navGroups: NavGroup[] = [
     label: "Settings",
     items: [
       { page: "google-maps-integration", label: "Google Maps Settings", icon: MapPinned },
+      { page: "system-deployment", label: "System Deployment", icon: RefreshCw },
     ],
   },
   {

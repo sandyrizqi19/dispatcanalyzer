@@ -124,6 +124,14 @@ app.include_router(phase8_router)
 app.include_router(phase9_router)
 app.include_router(google_routes_settings_router)
 
+@app.get("/api/v1/dummy")
+def dummy_test_route():
+    return {
+        "status": "success",
+        "message": "This is a dummy route for testing. Feel free to modify this message to test deployment updates!",
+        "timestamp": datetime.now().isoformat()
+    }
+
 
 class CompatibilityRequest(BaseModel):
     mt_id: str

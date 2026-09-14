@@ -1,0 +1,22 @@
+services:
+  deployer:
+    build:
+      context: ../..
+      dockerfile: services/deployer/Dockerfile
+    container_name: dispatcanalyzer-deployer
+    restart: unless-stopped
+    ports:
+      - "${DEPLOYER_PORT:-8080}:8080"
+    environment:
+      - REPO_PATH=/workspace
+      - GIT_UPSTREAM_URL=${GIT_UPSTREAM_URL:-https://github.com/ferdeh/dispatcanalyzer.git}
+      - GIT_ORIGIN_URL=${GIT_ORIGIN_URL:-https://github.com/sandyrizqi19/dispatcanalyzer.git}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - DEPLOYER_AUTH_TOKEN=${DEPLOYER_AUTH_TOKEN:-}
+      - API_HEALTH_URL=${API_HEALTH_URL:-http://host.docker.internal:8000/api/v1/health}
+      - WEB_HEALTH_URL=${WEB_HEALTH_URL:-http://host.docker.internal:3000}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../..:/workspace
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
