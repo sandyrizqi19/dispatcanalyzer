@@ -61,8 +61,12 @@
                         <label class="block text-sm font-medium text-gray-700 mb-1">Git Token (PAT) / Password</label>
                         <input type="password" id="git_token" name="git_token" class="w-full border border-gray-300 rounded p-2 text-sm focus:ring-blue-500 focus:border-blue-500" placeholder="ghp_...">
                     </div>
-                    <div class="col-span-2">
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Target Branch</label>
+                    <div class="col-span-1">
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Upstream Branch (Source)</label>
+                        <input type="text" id="upstream_branch" name="upstream_branch" class="w-full border border-gray-300 rounded p-2 text-sm focus:ring-blue-500 focus:border-blue-500" placeholder="main">
+                    </div>
+                    <div class="col-span-1">
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Target Branch (Local/Origin)</label>
                         <input type="text" id="target_branch" name="target_branch" class="w-full border border-gray-300 rounded p-2 text-sm focus:ring-blue-500 focus:border-blue-500" placeholder="main">
                     </div>
                     <div class="col-span-2 flex justify-end mt-2">
@@ -112,6 +116,7 @@
                     document.getElementById('origin_url').value = data.origin_url || '';
                     document.getElementById('git_username').value = data.git_username || '';
                     document.getElementById('git_token').value = data.git_token || '';
+                    document.getElementById('upstream_branch').value = data.upstream_branch || 'main';
                     document.getElementById('target_branch').value = data.target_branch || 'main';
                 }
             } catch (err) {
@@ -129,6 +134,7 @@
                 origin_url: document.getElementById('origin_url').value,
                 git_username: document.getElementById('git_username').value,
                 git_token: document.getElementById('git_token').value,
+                upstream_branch: document.getElementById('upstream_branch').value,
                 target_branch: document.getElementById('target_branch').value,
             };
             
