@@ -142,7 +142,7 @@ app.include_router(google_routes_settings_router)
 def dummy_test_route():
     return {
         "status": "success",
-        "message": "Deployment Test: Jika Anda melihat teks ini di tester-app, ini deploy baru yaaaaa",
+        "message": "ini deploy lagi yaa",
         "branch": "deploy_test",
         "timestamp": datetime.now().isoformat()
     }
