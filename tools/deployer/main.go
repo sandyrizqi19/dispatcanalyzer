@@ -21,6 +21,7 @@ type Config struct {
 	OriginURL       string `json:"origin_url"`
 	GitUsername     string `json:"git_username"`
 	GitToken        string `json:"git_token"`
+	TargetBranch    string `json:"target_branch"`
 }
 
 var (
@@ -193,11 +194,16 @@ func handleDeploy(w http.ResponseWriter, r *http.Request) {
 		commands = append(commands, []string{"git", "remote", "add", "origin", originURL})
 	}
 
+	branch := cfg.TargetBranch
+	if branch == "" {
+		branch = "main"
+	}
+
 	commands = append(commands,
 		[]string{"git", "fetch", "upstream"},
-		[]string{"git", "checkout", "main"},
-		[]string{"git", "merge", "upstream/main"},
-		[]string{"git", "push", "origin", "main"},
+		[]string{"git", "checkout", branch},
+		[]string{"git", "merge", "upstream/" + branch},
+		[]string{"git", "push", "origin", branch},
 		[]string{"docker", "compose", "down"},
 		[]string{"docker", "compose", "up", "--build", "-d"},
 	)
