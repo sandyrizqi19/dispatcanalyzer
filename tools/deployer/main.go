@@ -199,17 +199,29 @@ func handleDeploy(w http.ResponseWriter, r *http.Request) {
 	if branch == "" {
 		branch = "main"
 	}
-
 	upstreamBranch := cfg.UpstreamBranch
 	if upstreamBranch == "" {
 		upstreamBranch = "main"
 	}
 
+	if cfg.UpstreamURL != "" {
+		commands = append(commands,
+			[]string{"git", "remote", "remove", "upstream"},
+			[]string{"git", "remote", "add", "upstream", cfg.UpstreamURL},
+			[]string{"git", "fetch", "upstream"},
+			[]string{"git", "checkout", branch},
+			[]string{"git", "merge", "upstream/" + upstreamBranch},
+			[]string{"git", "push", "origin", branch},
+		)
+	} else {
+		// Origin only deployment
+		commands = append(commands,
+			[]string{"git", "checkout", branch},
+			[]string{"git", "pull", "origin", branch},
+		)
+	}
+
 	commands = append(commands,
-		[]string{"git", "fetch", "upstream"},
-		[]string{"git", "checkout", branch},
-		[]string{"git", "merge", "upstream/" + upstreamBranch},
-		[]string{"git", "push", "origin", branch},
 		[]string{"docker", "compose", "down"},
 		[]string{"docker", "compose", "up", "--build", "-d"},
 	)
