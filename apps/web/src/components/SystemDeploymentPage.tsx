@@ -4,7 +4,7 @@ import { useMemo } from "react";
 export function SystemDeploymentPage() {
   const deployerUrl = useMemo(() => {
     const host = window.location.hostname || "localhost";
-    const customPort = import.meta.env.VITE_DEPLOYER_PORT || "8080";
+    const customPort = import.meta.env.VITE_DEPLOYER_PORT || "8083";
     return `http://${host}:${customPort}`;
   }, []);
 
@@ -47,7 +47,7 @@ export function SystemDeploymentPage() {
         <div className="mt-5 rounded-lg bg-blue-50 border border-blue-200 p-4 text-xs text-slate-700 flex items-start gap-3">
           <Server size={18} className="text-[#0b73bf] flex-shrink-0 mt-0.5" />
           <div>
-            <span className="font-semibold text-[#15385b]">Arsitektur Aman (Anti-Interupsi):</span> Layanan Deployment Manager berjalan pada port <code>8080</code> secara terpisah dari stack aplikasi utama. Ketika container aplikasi dimatikan dan dibangun ulang (<code>docker compose down &amp; build</code>), antarmuka pemantauan log di bawah ini <strong>tidak akan terputus</strong>.
+            <span className="font-semibold text-[#15385b]">Arsitektur Aman (Anti-Interupsi):</span> Layanan Deployment Manager berjalan pada port <code>8083</code> secara terpisah dari stack aplikasi utama. Ketika container aplikasi dimatikan dan dibangun ulang (<code>docker compose down &amp; build</code>), antarmuka pemantauan log di bawah ini <strong>tidak akan terputus</strong>.
           </div>
         </div>
       </div>

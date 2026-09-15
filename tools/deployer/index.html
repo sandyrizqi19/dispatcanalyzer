@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deployment Manager</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .terminal {
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+            font-family: 'Courier New', Courier, monospace;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            height: 400px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        .log-info { color: #569cd6; }
+        .log-error { color: #f44747; }
+        .log-success { color: #4ec9b0; }
+        .log-command { color: #ce9178; font-weight: bold; }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800 font-sans p-6">
+    <div class="max-w-5xl mx-auto space-y-6">
+        
+        <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+            <div class="flex items-center justify-between mb-4">
+                <div>
+                    <h1 class="text-2xl font-bold text-gray-900">Deployment Manager</h1>
+                    <p class="text-sm text-gray-500">Automated fork synchronization and docker stack deployment</p>
+                </div>
+                <button id="toggleSettingsBtn" class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 text-sm font-semibold transition">
+                    Toggle Settings
+                </button>
+            </div>
+
+            <!-- Settings Panel -->
+            <div id="settingsPanel" class="hidden mb-6 p-4 bg-gray-50 border border-gray-200 rounded-lg">
+                <h2 class="text-lg font-semibold mb-3">Configuration</h2>
+                <form id="configForm" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div class="col-span-2">
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Target Directory</label>
+                        <input type="text" id="target_directory" name="target_directory" class="w-full border border-gray-300 rounded p-2 text-sm focus:ring-blue-500 focus:border-blue-500" placeholder="/var/dispatchanalyzer">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Upstream URL (Source)</label>
+                        <input type="text" id="upstream_url" name="upstream_url" class="w-full border border-gray-300 rounded p-2 text-sm focus:ring-blue-500 focus:border-blue-500" placeholder="https://github.com/ferdeh/dispatcanalyzer.git">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Origin URL (Fork)</label>
+                        <input type="text" id="origin_url" name="origin_url" class="w-full border border-gray-300 rounded p-2 text-sm focus:ring-blue-500 focus:border-blue-500" placeholder="https://github.com/sandyrizqi19/dispatcanalyzer.git">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Git Username</label>
+                        <input type="text" id="git_username" name="git_username" class="w-full border border-gray-300 rounded p-2 text-sm focus:ring-blue-500 focus:border-blue-500" placeholder="sandyrizqi19">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Git Token (PAT) / Password</label>
+                        <input type="password" id="git_token" name="git_token" class="w-full border border-gray-300 rounded p-2 text-sm focus:ring-blue-500 focus:border-blue-500" placeholder="ghp_...">
+                    </div>
+                    <div class="col-span-2 flex justify-end mt-2">
+                        <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-semibold transition">Save Configuration</button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Deployment Console -->
+            <div>
+                <div class="flex items-center justify-between mb-2">
+                    <h2 class="text-lg font-semibold">Live Console</h2>
+                    <button id="startDeployBtn" class="px-5 py-2.5 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-bold shadow-sm transition flex items-center gap-2">
+                        Start Deployment
+                    </button>
+                </div>
+                
+                <div id="terminal" class="terminal">
+                    <div class="text-gray-400 italic">Ready. Click 'Start Deployment' to begin.</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const settingsPanel = document.getElementById('settingsPanel');
+        const toggleSettingsBtn = document.getElementById('toggleSettingsBtn');
+        const configForm = document.getElementById('configForm');
+        const startDeployBtn = document.getElementById('startDeployBtn');
+        const terminal = document.getElementById('terminal');
+
+        let isDeploying = false;
+
+        // Toggle Settings
+        toggleSettingsBtn.addEventListener('click', () => {
+            settingsPanel.classList.toggle('hidden');
+        });
+
+        // Load Config on Startup
+        async function loadConfig() {
+            try {
+                const res = await fetch('/api/config');
+                if (res.ok) {
+                    const data = await res.json();
+                    document.getElementById('target_directory').value = data.target_directory || '';
+                    document.getElementById('upstream_url').value = data.upstream_url || '';
+                    document.getElementById('origin_url').value = data.origin_url || '';
+                    document.getElementById('git_username').value = data.git_username || '';
+                    document.getElementById('git_token').value = data.git_token || '';
+                }
+            } catch (err) {
+                console.error("Failed to load config", err);
+            }
+        }
+        loadConfig();
+
+        // Save Config
+        configForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const payload = {
+                target_directory: document.getElementById('target_directory').value,
+                upstream_url: document.getElementById('upstream_url').value,
+                origin_url: document.getElementById('origin_url').value,
+                git_username: document.getElementById('git_username').value,
+                git_token: document.getElementById('git_token').value,
+            };
+            
+            try {
+                const res = await fetch('/api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (res.ok) {
+                    alert('Configuration saved successfully!');
+                    settingsPanel.classList.add('hidden');
+                } else {
+                    alert('Failed to save configuration.');
+                }
+            } catch (err) {
+                alert('Error saving config: ' + err.message);
+            }
+        });
+
+        // Append log to terminal
+        function appendLog(text, type = '') {
+            const div = document.createElement('div');
+            div.textContent = text;
+            if (type) div.className = `log-${type}`;
+            terminal.appendChild(div);
+            terminal.scrollTop = terminal.scrollHeight;
+        }
+
+        // Start Deployment via SSE
+        startDeployBtn.addEventListener('click', () => {
+            if (isDeploying) return;
+            
+            terminal.innerHTML = '';
+            appendLog('Starting deployment process...', 'info');
+            
+            isDeploying = true;
+            startDeployBtn.disabled = true;
+            startDeployBtn.classList.add('opacity-50', 'cursor-not-allowed');
+            startDeployBtn.textContent = 'Deploying...';
+
+            const eventSource = new EventSource('/api/deploy');
+
+            eventSource.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                appendLog(data.text, data.type);
+            };
+
+            eventSource.addEventListener('done', () => {
+                appendLog('\nDeployment finished successfully!', 'success');
+                eventSource.close();
+                resetDeployBtn();
+            });
+
+            eventSource.addEventListener('error_msg', (event) => {
+                const data = JSON.parse(event.data);
+                appendLog(`\nDeployment failed: ${data.text}`, 'error');
+                eventSource.close();
+                resetDeployBtn();
+            });
+
+            eventSource.onerror = (err) => {
+                console.error("SSE Error:", err);
+                eventSource.close();
+                resetDeployBtn();
+            };
+        });
+
+        function resetDeployBtn() {
+            isDeploying = false;
+            startDeployBtn.disabled = false;
+            startDeployBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+            startDeployBtn.textContent = 'Start Deployment';
+        }
+    </script>
+</body>
+</html>
