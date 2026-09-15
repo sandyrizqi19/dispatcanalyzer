@@ -183,24 +183,26 @@ func handleDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	commands := [][]string{
-		{"git", "remote", "remove", "upstream"},
-		{"git", "remote", "add", "upstream", cfg.UpstreamURL},
-		{"git", "remote", "remove", "origin"},
-		{"git", "remote", "add", "origin", originURL},
-		{"git", "fetch", "upstream"},
-		{"git", "checkout", "main"},
-		{"git", "merge", "upstream/main"},
-		{"git", "push", "origin", "main"},
-		{"docker", "compose", "down"},
-		{"docker", "compose", "up", "--build", "-d"},
+	var commands [][]string
+	if cfg.UpstreamURL != "" {
+		commands = append(commands, []string{"git", "remote", "remove", "upstream"})
+		commands = append(commands, []string{"git", "remote", "add", "upstream", cfg.UpstreamURL})
+	}
+	if originURL != "" {
+		commands = append(commands, []string{"git", "remote", "remove", "origin"})
+		commands = append(commands, []string{"git", "remote", "add", "origin", originURL})
 	}
 
+	commands = append(commands,
+		[]string{"git", "fetch", "upstream"},
+		[]string{"git", "checkout", "main"},
+		[]string{"git", "merge", "upstream/main"},
+		[]string{"git", "push", "origin", "main"},
+		[]string{"docker", "compose", "down"},
+		[]string{"docker", "compose", "up", "--build", "-d"},
+	)
+
 	for _, cmdArgs := range commands {
-		// skip empty remote commands if not configured
-		if cmdArgs[0] == "git" && cmdArgs[1] == "remote" && cmdArgs[2] == "add" && len(cmdArgs) > 4 && cmdArgs[4] == "" {
-			continue
-		}
 
 		displayArgs := append([]string(nil), cmdArgs...)
 		// Mask token in output
